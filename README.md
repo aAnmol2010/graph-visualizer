@@ -114,17 +114,6 @@ git push heroku main
 
 ---
 
-## Screenshots
-
-> Add your own screenshots here.
-
-```
-docs/screenshots/home.png      — main UI with graph and algorithm output
-docs/screenshots/dijkstra.png  — distances after running Dijkstra
-```
-
----
-
 ## License
 
 Free to use for learning and portfolio projects.
