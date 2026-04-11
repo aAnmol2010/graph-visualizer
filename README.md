@@ -1,82 +1,130 @@
-# Graph visualizer
+# Graph Visualizer
 
-A small **Flask** web app to build a graph in the browser, toggle **directed / undirected** mode, and run **BFS**, **DFS**, **Dijkstra** (binary min-heap), **cycle detection**, and **topological sort** (directed acyclic graphs). The right-hand panel shows **live nodes and edges**.
+A **Flask** web app to build graphs interactively in the browser — toggle between directed and undirected mode, visualize the structure in a live 2D canvas, and run classic graph algorithms with animated traversal highlighting.
+
+![Python](https://img.shields.io/badge/Python-3.12-blue?style=flat-square)
+![Flask](https://img.shields.io/badge/Flask-3.x-lightgrey?style=flat-square)
+![License](https://img.shields.io/badge/License-MIT-green?style=flat-square)
+
+---
 
 ## Features
 
-- Add and delete nodes and weighted edges
-- Directed ↔ undirected mode (clears the graph when switching so the model stays consistent)
-- Clear graph without changing mode
-- Breadth-first and depth-first traversals from any start node
-- Single-source shortest paths with Dijkstra (non-negative weights)
-- Cycle check (directed: DFS coloring; undirected: DFS with parent)
-- Topological order via Kahn’s algorithm (directed; reports a cycle if one exists)
-- Flash messages for invalid or empty input (unknown nodes, bad weights, missing edges)
-- Responsive layout with a dark theme
+- **Add / delete nodes and weighted edges** interactively
+- **Directed ↔ undirected mode** — toggle anytime (clears graph to keep adjacency consistent)
+- **Live 2D canvas** — auto-layout with shuffle button; directed mode shows arrowheads
+- **Breadth-first search (BFS)** — level-order traversal from any start node
+- **Depth-first search (DFS)** — recursive preorder with call-stack trace
+- **Dijkstra's algorithm** — single-source shortest paths via binary min-heap (`heapq`)
+- **Cycle detection** — DFS coloring (directed) / DFS with parent tracking (undirected)
+- **Topological sort** — Kahn's algorithm; reports a cycle if one exists
+- **Flash messages** for invalid input — unknown nodes, bad weights, missing edges
+- Responsive dark-theme UI
 
-## Screenshots
+---
 
-Add your own captures here for portfolio or README polish:
+## Project Structure
 
-1. `docs/screenshots/home.png` — main UI with sample graph and algorithm output  
-2. `docs/screenshots/dijkstra.png` — distances after running Dijkstra  
-
-Then embed in this section, for example:
-
-```markdown
-![Home](docs/screenshots/home.png)
+```
+graph_visualizer/
+│
+├── app.py                    # Flask routes and validation
+├── graph.py                  # Graph ADT (adjacency map)
+│
+├── algorithms/
+│   ├── __init__.py
+│   ├── bfs.py                # Breadth-first search
+│   ├── dfs.py                # Depth-first search (recursive)
+│   ├── dijkstra.py           # Dijkstra with heapq
+│   ├── cycle.py              # Cycle detection (directed + undirected)
+│   └── topological_sort.py   # Kahn's topological sort
+│
+├── templates/
+│   └── index.html            # Jinja2 UI template
+│
+├── static/
+│   ├── style.css             # Dark theme styles
+│   └── graph-viz.js          # Canvas-based 2D graph renderer
+│
+├── requirements.txt
+├── Procfile                  # For Heroku / Railway
+└── render.yaml               # Render Blueprint config
 ```
 
-## How to run locally
+---
+
+## Getting Started
+
+### Prerequisites
+
+- Python 3.10+
+
+### Run Locally
 
 ```bash
-cd graph_visualizer
+git clone https://github.com/your-username/graph-visualizer.git
+cd graph-visualizer
+
 python -m venv .venv
-source .venv/bin/activate   # Windows: .venv\Scripts\activate
+source .venv/bin/activate       # Windows: .venv\Scripts\activate
+
 pip install -r requirements.txt
-export FLASK_DEBUG=1        # optional
+
+export FLASK_DEBUG=1            # Windows: set FLASK_DEBUG=1
 python app.py
 ```
 
 Open [http://127.0.0.1:5000](http://127.0.0.1:5000).
 
-## Deploy (free tier)
+---
 
-### Render
+## Algorithms
 
-1. Push this repo to GitHub.  
-2. In Render: **New → Web Service**, connect the repo.  
-3. **Runtime:** Python 3.12 (or match `render.yaml`).  
-4. **Build:** `pip install -r requirements.txt`  
-5. **Start:** `gunicorn app:app --bind 0.0.0.0:$PORT`  
-6. Add an environment variable **`SECRET_KEY`** (any long random string).  
+| Algorithm | Approach | Time Complexity |
+|---|---|---|
+| BFS | Queue-based level order | O(V + E) |
+| DFS | Recursive preorder | O(V + E) |
+| Dijkstra | Binary min-heap (`heapq`) | O((V + E) log V) |
+| Cycle Detection | DFS coloring / parent tracking | O(V + E) |
+| Topological Sort | Kahn's (in-degree / BFS) | O(V + E) |
 
-You can also use the included `render.yaml` with **Blueprint** deploy.
+---
+
+## Deployment
+
+### Render (recommended — free tier)
+
+1. Push this repo to GitHub.
+2. Go to [render.com](https://render.com) → **New → Web Service** → connect your repo.
+3. Render auto-detects `render.yaml` — just add a `SECRET_KEY` environment variable and deploy.
 
 ### Railway
 
-1. **New project → Deploy from GitHub repo.**  
-2. Railway detects Python; ensure the start command is:
+1. **New project → Deploy from GitHub repo.**
+2. Set the start command: `gunicorn app:app --bind 0.0.0.0:$PORT`
+3. Add `SECRET_KEY` in **Variables**.
 
-   `gunicorn app:app --bind 0.0.0.0:$PORT`
+### Heroku
 
-3. Set **`SECRET_KEY`** in **Variables**.  
-4. `$PORT` is provided automatically.
+```bash
+heroku create your-app-name
+heroku config:set SECRET_KEY=your-secret-key
+git push heroku main
+```
 
-## Project layout
+---
 
-| Path | Role |
-|------|------|
-| `app.py` | Flask routes, validation, flashes |
-| `graph.py` | Graph ADT (adjacency map) |
-| `algorithms/bfs.py` | BFS |
-| `algorithms/dfs.py` | DFS (iterative) |
-| `algorithms/dijkstra.py` | Dijkstra with `heapq` |
-| `algorithms/cycle.py` | Cycle detection |
-| `algorithms/topological_sort.py` | Kahn’s topological sort |
-| `templates/index.html` | UI |
-| `static/style.css` | Styling |
+## Screenshots
+
+> Add your own screenshots here.
+
+```
+docs/screenshots/home.png      — main UI with graph and algorithm output
+docs/screenshots/dijkstra.png  — distances after running Dijkstra
+```
+
+---
 
 ## License
 
-Use freely for learning and portfolio projects.
+Free to use for learning and portfolio projects.
