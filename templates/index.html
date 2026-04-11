@@ -1,0 +1,196 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Graph Visualizer — BFS, DFS, Dijkstra</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,400;0,9..40,600;0,9..40,700;1,9..40,400&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body>
+    <div class="page">
+        <header class="site-header">
+            <h1>Graph visualizer</h1>
+            <p class="lead">Build a graph, switch directed or undirected mode, then run traversals and shortest paths in the browser.</p>
+        </header>
+
+        {% with messages = get_flashed_messages(with_categories=true) %}
+        {% if messages %}
+        <ul class="flash-list">
+            {% for category, message in messages %}
+            <li class="{{ category }}">{{ message }}</li>
+            {% endfor %}
+        </ul>
+        {% endif %}
+        {% endwith %}
+
+        <div class="layout">
+            <main class="layout-main">
+                <section class="panel">
+                    <h2>Graph mode</h2>
+                    <div class="mode-badge {{ 'undirected' if not graph.directed else '' }}">
+                        {% if graph.directed %}Directed{% else %}Undirected{% endif %} graph
+                    </div>
+                    <form action="{{ url_for('set_mode') }}" method="POST" class="form-grid">
+                        <div class="radio-row">
+                            <label><input type="radio" name="direction" value="Directed Graph" {% if graph.directed %}checked{% endif %}> Directed</label>
+                            <label><input type="radio" name="direction" value="Undirected Graph" {% if not graph.directed %}checked{% endif %}> Undirected</label>
+                        </div>
+                        <div class="btn-row">
+                            <button type="submit" class="btn btn-primary">Apply mode</button>
+                        </div>
+                        <p class="empty-hint">Switching mode clears the graph so adjacency stays consistent.</p>
+                    </form>
+                    <form action="{{ url_for('reset') }}" method="POST" class="btn-row" style="margin-top:1rem;">
+                        <button type="submit" class="btn btn-ghost">Clear graph</button>
+                    </form>
+                </section>
+
+                <section class="panel">
+                    <h2>Structure</h2>
+                    <div class="form-grid">
+                        <form action="{{ url_for('add_n') }}" method="POST">
+                            <label for="add-node-id">Add node</label>
+                            <input id="add-node-id" type="text" name="node_id" placeholder="e.g. A" autocomplete="off">
+                            <div class="btn-row"><button type="submit" class="btn btn-primary">Add node</button></div>
+                        </form>
+                        <form action="{{ url_for('add_e') }}" method="POST">
+                            <label>Add edge</label>
+                            <input type="text" name="u" placeholder="From" autocomplete="off">
+                            <input type="text" name="v" placeholder="To" autocomplete="off">
+                            <input type="text" name="w" placeholder="Weight (default 1)" autocomplete="off">
+                            <div class="btn-row"><button type="submit" class="btn btn-primary">Add edge</button></div>
+                        </form>
+                        <form action="{{ url_for('del_n') }}" method="POST">
+                            <label for="del-node-id">Delete node</label>
+                            <input id="del-node-id" type="text" name="node_id" placeholder="Node id" autocomplete="off">
+                            <div class="btn-row"><button type="submit" class="btn btn-danger">Delete node</button></div>
+                        </form>
+                        <form action="{{ url_for('del_e') }}" method="POST">
+                            <label>Delete edge</label>
+                            <input type="text" name="u" placeholder="From" autocomplete="off">
+                            <input type="text" name="v" placeholder="To" autocomplete="off">
+                            <div class="btn-row"><button type="submit" class="btn btn-danger">Delete edge</button></div>
+                        </form>
+                    </div>
+                </section>
+
+                <section class="panel">
+                    <h2>Algorithms</h2>
+                    <p class="empty-hint">Start node must exist in the graph.</p>
+                    <div class="form-grid">
+                        <form action="{{ url_for('bfs_traversal') }}" method="POST">
+                            <label for="bfs-start">Breadth-first search</label>
+                            <input id="bfs-start" type="text" name="node_id" placeholder="Start node" autocomplete="off">
+                            <div class="btn-row"><button type="submit" class="btn btn-primary">Run BFS</button></div>
+                        </form>
+                        {% if bfs_result is defined and bfs_result is not none %}
+                        <div class="result-box"><strong>BFS order:</strong> {{ bfs_result | join(' → ') }}</div>
+                        {% endif %}
+
+                        <form action="{{ url_for('dfs_traversal') }}" method="POST">
+                            <label for="dfs-start">Depth-first search</label>
+                            <input id="dfs-start" type="text" name="node_id" placeholder="Start node" autocomplete="off">
+                            <div class="btn-row"><button type="submit" class="btn btn-primary">Run DFS</button></div>
+                        </form>
+                        {% if dfs_result is defined and dfs_result is not none %}
+                        <div class="result-box"><strong>DFS order:</strong> {{ dfs_result | join(' → ') }}</div>
+                        {% endif %}
+
+                        <form action="{{ url_for('dijkstra_path') }}" method="POST">
+                            <label for="dijk-start">Dijkstra (min-heap)</label>
+                            <input id="dijk-start" type="text" name="node_id" placeholder="Start node" autocomplete="off">
+                            <div class="btn-row"><button type="submit" class="btn btn-primary">Run Dijkstra</button></div>
+                        </form>
+                        {% if dijkstra_result is defined and dijkstra_result is not none %}
+                        <div class="result-box"><strong>Distances:</strong>
+                            {% for node, dist in dijkstra_result.items() %}
+                            {{ node }}: {{ dist | fmt_dist }}{% if not loop.last %}; {% endif %}
+                            {% endfor %}
+                        </div>
+                        {% endif %}
+
+                        <form action="{{ url_for('detect_cycle') }}" method="POST">
+                            <label>Cycle detection</label>
+                            <p class="empty-hint">Uses directed or undirected rules based on current mode.</p>
+                            <div class="btn-row"><button type="submit" class="btn btn-primary">Check for cycle</button></div>
+                        </form>
+                        {% if cycle_result is defined %}
+                        <div class="result-box"><strong>Result:</strong> {{ cycle_result }}</div>
+                        {% endif %}
+
+                        <form action="{{ url_for('topo_sort') }}" method="POST">
+                            <label>Topological sort</label>
+                            <p class="empty-hint">Directed acyclic graphs only. Fails if a directed cycle exists.</p>
+                            <div class="btn-row"><button type="submit" class="btn btn-primary">Topological sort</button></div>
+                        </form>
+                        {% if topo_result is defined %}
+                        <div class="result-box"><strong>Order:</strong> {{ topo_result }}</div>
+                        {% endif %}
+                    </div>
+                </section>
+            </main>
+
+            <aside class="layout-sidebar layout-sidebar--sticky" aria-label="Graph visualization and state">
+                <section class="panel graph-viz-panel" aria-labelledby="graph-viz-heading">
+                    <h2 id="graph-viz-heading">2D graph view</h2>
+                    <p class="empty-hint">Layout updates after each change. Directed mode shows arrowheads.</p>
+                    <div class="btn-row graph-viz-toolbar">
+                        <button type="button" class="btn btn-ghost" id="graph-viz-shuffle">Shuffle layout</button>
+                    </div>
+                    <script id="graph-viz-json" type="application/json">{{ graph_viz | tojson }}</script>
+                    <script id="graph-viz-traversal" type="application/json">{{ viz_traversal | default([]) | tojson }}</script>
+                    <script id="graph-viz-trace" type="application/json">{{ viz_trace | default([]) | tojson }}</script>
+                    <p class="graph-viz-step" id="graph-viz-step" hidden></p>
+                    <div class="graph-viz-host" id="graph-viz-host">
+                        <canvas id="graph-viz-canvas" role="img" aria-label="Graph structure"></canvas>
+                        <p class="graph-viz-empty" id="graph-viz-empty">Add nodes and edges to see the graph drawn here.</p>
+                    </div>
+                </section>
+
+                <section class="panel graph-state">
+                <h2>Live graph state</h2>
+                <div class="graph-columns">
+                    <div>
+                        <h2 style="font-size:0.75rem;margin-bottom:0.5rem;">Nodes ({{ graph.node | length }})</h2>
+                        {% if graph.node %}
+                        <ul class="pill-list">
+                            {% for node in graph.node %}
+                            <li>{{ node }}</li>
+                            {% endfor %}
+                        </ul>
+                        {% else %}
+                        <p class="empty-hint">No nodes yet.</p>
+                        {% endif %}
+                    </div>
+                    <div>
+                        <h2 style="font-size:0.75rem;margin-bottom:0.5rem;">Edges</h2>
+                        {% set edge_ns = namespace(any=false) %}
+                        <ul class="edge-list">
+                            {% for node, neighbours in graph.adjacency.items() %}
+                            {% for target, w in neighbours.items() %}
+                            {% set edge_ns.any = true %}
+                            <li><code>{{ node }} → {{ target }}</code> ({{ w }})</li>
+                            {% endfor %}
+                            {% endfor %}
+                        </ul>
+                        {% if graph.node and not edge_ns.any %}
+                        <p class="empty-hint">No edges yet.</p>
+                        {% elif not graph.node %}
+                        <p class="empty-hint">Add nodes to begin.</p>
+                        {% endif %}
+                    </div>
+                </div>
+                </section>
+            </aside>
+        </div>
+
+        <footer class="page-footer">
+            Flask + Jinja2 · Educational graph playground
+        </footer>
+    </div>
+    <script src="{{ url_for('static', filename='graph-viz.js') }}"></script>
+</body>
+</html>
