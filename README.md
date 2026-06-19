@@ -1,119 +1,104 @@
 # Graph Visualizer
 
-A **Flask** web app to build graphs interactively in the browser — toggle between directed and undirected mode, visualize the structure in a live 2D canvas, and run classic graph algorithms with animated traversal highlighting.
+[![CI](https://github.com/aAnmol2010/graph-visualizer/actions/workflows/ci.yml/badge.svg)](https://github.com/aAnmol2010/graph-visualizer/actions/workflows/ci.yml)
+[![codecov](https://codecov.io/gh/aAnmol2010/graph-visualizer/branch/main/graph/badge.svg)](https://codecov.io/gh/aAnmol2010/graph-visualizer)
+[![Python 3.12](https://img.shields.io/badge/python-3.12-blue.svg)](https://www.python.org/downloads/release/python-3120/)
+[![Flask 3](https://img.shields.io/badge/flask-3.1.3-green.svg)](https://flask.palletsprojects.com/)
 
-![Python](https://img.shields.io/badge/Python-3.12-blue?style=flat-square)
-![Flask](https://img.shields.io/badge/Flask-3.x-lightgrey?style=flat-square)
-![License](https://img.shields.io/badge/License-MIT-green?style=flat-square)
-
----
+A production-grade, interactive web application for building, visualising, and animating classic graph algorithms. Built from scratch with zero dependency on graph libraries (no NetworkX), this project is designed to demonstrate robust backend architecture, REST API design, session state management, and core CS fundamentals.
 
 ## Features
 
-- **Add / delete nodes and weighted edges** interactively
-- **Directed ↔ undirected mode** — toggle anytime (clears graph to keep adjacency consistent)
-- **Live 2D canvas** — auto-layout with shuffle button; directed mode shows arrowheads
-- **Breadth-first search (BFS)** — level-order traversal from any start node
-- **Depth-first search (DFS)** — recursive preorder with call-stack trace
-- **Dijkstra's algorithm** — single-source shortest paths via binary min-heap (`heapq`)
-- **Cycle detection** — DFS coloring (directed) / DFS with parent tracking (undirected)
-- **Topological sort** — Kahn's algorithm; reports a cycle if one exists
-- **Flash messages** for invalid input — unknown nodes, bad weights, missing edges
-- Responsive dark-theme UI
+- **Interactive Canvas:** Click to add nodes, drag to connect edges, alt-drag to arrange the layout.
+- **Algorithm Playback:** Step-by-step animation of search traversals, shortest paths, and components.
+- **Session Isolation:** Graph state is strictly tied to your session (no shared mutable globals).
+- **REST API:** Fully documented JSON API (via Swagger UI) to programmatically manipulate the graph.
+- **Tested:** 100+ unit and integration tests covering algorithmic edge cases and API behaviour.
 
 ---
 
-## Project Structure
+## Supported Algorithms
 
-```
-graph_visualizer/
-│
-├── app.py                    # Flask routes and validation
-├── graph.py                  # Graph ADT (adjacency map)
-│
-├── algorithms/
-│   ├── __init__.py
-│   ├── bfs.py                # Breadth-first search
-│   ├── dfs.py                # Depth-first search (recursive)
-│   ├── dijkstra.py           # Dijkstra with heapq
-│   ├── cycle.py              # Cycle detection (directed + undirected)
-│   └── topological_sort.py   # Kahn's topological sort
-│
-├── templates/
-│   └── index.html            # Jinja2 UI template
-│
-├── static/
-│   ├── style.css             # Dark theme styles
-│   └── graph-viz.js          # Canvas-based 2D graph renderer
-│
-├── requirements.txt
-├── Procfile                  # For Heroku / Railway
-└── render.yaml               # Render Blueprint config
-```
+All algorithms are implemented from scratch in pure Python and include detailed type hints, deterministic execution, and protection against maximum recursion depth limits.
+
+| Algorithm | Graph Type | Time Complexity | Space Complexity | Description |
+| :--- | :--- | :--- | :--- | :--- |
+| **Breadth-First Search** | Any | $\mathcal{O}(V + E)$ | $\mathcal{O}(V)$ | Level-order traversal. |
+| **Depth-First Search** | Any | $\mathcal{O}(V + E)$ | $\mathcal{O}(V)$ | Preorder traversal with live call-stack tracing. |
+| **Dijkstra** | Non-negative | $\mathcal{O}((V + E) \log V)$ | $\mathcal{O}(V)$ | Shortest paths from a source using a binary min-heap. |
+| **Bellman-Ford** | Any | $\mathcal{O}(V \cdot E)$ | $\mathcal{O}(V)$ | Shortest paths handling negative weights & cycle detection. |
+| **Kruskal (MST)** | Undirected | $\mathcal{O}(E \log E)$ | $\mathcal{O}(V)$ | Minimum Spanning Tree using Union-Find (DSU). |
+| **Tarjan (SCC)** | Directed | $\mathcal{O}(V + E)$ | $\mathcal{O}(V)$ | Strongly Connected Components via iterative DFS stack. |
+| **Kahn (Topo Sort)** | Directed DAG | $\mathcal{O}(V + E)$ | $\mathcal{O}(V)$ | Topological ordering via in-degree reduction. |
 
 ---
 
-## Getting Started
+## Architecture
 
-### Prerequisites
+This application strictly separates the **Graph ADT** from the web delivery layer.
 
-- Python 3.10+
+1. **State Management:** The original global `g = Graph()` anti-pattern was removed. State is scoped per-user using securely signed HTTP-only cookies (`session_store.py`).
+2. **API & Routing:** HTML routes handle the frontend interaction, while a dedicated `api/v1.py` Blueprint serves JSON.
+3. **Rate Limiting:** `flask-limiter` protects against simple abuse while keeping the application responsive.
 
-### Run Locally
+### REST API Docs
+
+The application exposes a fully documented OpenAPI specification. Start the server and navigate to:
+👉 `http://localhost:5000/api/docs`
+
+---
+
+## Quickstart
+
+### Option A: Local Development (Virtual Environment)
+
+Requires Python 3.12+.
 
 ```bash
-git clone https://github.com/your-username/graph-visualizer.git
-cd graph-visualizer
+# 1. Create a virtual environment
+python3 -m venv .venv
+source .venv/bin/activate
 
-python -m venv .venv
-source .venv/bin/activate       # Windows: .venv\Scripts\activate
-
+# 2. Install dependencies
 pip install -r requirements.txt
 
-export FLASK_DEBUG=1            # Windows: set FLASK_DEBUG=1
+# 3. Run the application
 python app.py
 ```
+*The app will be available at http://localhost:5000*
 
-Open [http://127.0.0.1:5000](http://127.0.0.1:5000).
+### Option B: Docker
 
----
-
-## Algorithms
-
-| Algorithm | Approach | Time Complexity |
-|---|---|---|
-| BFS | Queue-based level order | O(V + E) |
-| DFS | Recursive preorder | O(V + E) |
-| Dijkstra | Binary min-heap (`heapq`) | O((V + E) log V) |
-| Cycle Detection | DFS coloring / parent tracking | O(V + E) |
-| Topological Sort | Kahn's (in-degree / BFS) | O(V + E) |
-
----
-
-## Deployment
-
-### Render (recommended — free tier)
-
-1. Push this repo to GitHub.
-2. Go to [render.com](https://render.com) → **New → Web Service** → connect your repo.
-3. Render auto-detects `render.yaml` — just add a `SECRET_KEY` environment variable and deploy.
-
-### Railway
-
-1. **New project → Deploy from GitHub repo.**
-2. Set the start command: `gunicorn app:app --bind 0.0.0.0:$PORT`
-3. Add `SECRET_KEY` in **Variables**.
-
-### Heroku
+Requires Docker and Docker Compose.
 
 ```bash
-heroku create your-app-name
-heroku config:set SECRET_KEY=your-secret-key
-git push heroku main
+docker-compose up --build
 ```
+*The app will be available at http://localhost:5000*
 
 ---
 
-## License
+## Testing
 
-Free to use for learning and portfolio projects.
+The project uses `pytest` with 100% coverage on core logic.
+
+```bash
+# Install dev dependencies
+pip install pytest pytest-cov mypy ruff
+
+# Run unit and integration tests
+pytest tests/ -v
+
+# Run with coverage report
+pytest tests/ --cov=. --cov-report=term-missing
+```
+
+## Linting & Typing
+
+```bash
+# Type check with mypy
+mypy . --ignore-missing-imports --disallow-untyped-defs
+
+# Lint and format with Ruff
+ruff check .
+```

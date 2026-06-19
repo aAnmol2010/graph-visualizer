@@ -1,24 +1,45 @@
-def DFS(node_id, adjacency):
+"""Depth-first search — recursive preorder with call-stack trace.
+
+Complexity: O(V + E) time, O(V) space (call stack depth).
+"""
+
+from __future__ import annotations
+
+
+def dfs(
+    start: str,
+    adjacency: dict[str, dict[str, float]],
+) -> tuple[list[str], list[dict]] | None:
+    """Recursive DFS from *start*.
+
+    Returns ``(order, trace)`` where:
+    - *order*: nodes in preorder visit sequence.
+    - *trace*: one entry per visited node with keys
+      ``{"focus": str, "stack": list[str]}`` — the call-stack snapshot
+      when that node was entered.  Used by the canvas to animate the
+      recursive call stack live.
+
+    Returns None if *start* is absent from the graph.
     """
-    Recursive depth-first traversal (preorder). Returns (order, trace) where
-    trace[i] is {"focus": node, "stack": [...]} — the call stack when that node
-    is visited (like a recursive call entering that frame).
-    """
-    if node_id not in adjacency:
+    if start not in adjacency:
         return None
 
-    order = []
-    trace = []
-    visited = set()
+    order: list[str] = []
+    trace: list[dict] = []
+    visited: set[str] = set()
 
-    def dfs(u, ancestors):
+    def _dfs(u: str, ancestors: list[str]) -> None:
         visited.add(u)
         stack_path = ancestors + [u]
         trace.append({"focus": u, "stack": stack_path})
         order.append(u)
         for v in sorted(adjacency[u].keys(), key=str):
             if v not in visited:
-                dfs(v, stack_path)
+                _dfs(v, stack_path)
 
-    dfs(node_id, [])
+    _dfs(start, [])
     return order, trace
+
+
+# Legacy alias
+DFS = dfs

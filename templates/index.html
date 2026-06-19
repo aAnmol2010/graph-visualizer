@@ -3,7 +3,8 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Graph Visualizer — BFS, DFS, Dijkstra</title>
+    <title>Graph Visualizer — BFS, DFS, Dijkstra, Bellman-Ford, MST, SCC</title>
+    <meta name="description" content="Interactive graph algorithm visualizer: build directed or undirected graphs in the browser, run BFS, DFS, Dijkstra, Bellman-Ford, Kruskal MST, Tarjan SCC with live step-by-step animation.">
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,400;0,9..40,600;0,9..40,700;1,9..40,400&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
@@ -12,8 +13,8 @@
 <body>
     <div class="page">
         <header class="site-header">
-            <h1>Graph visualizer</h1>
-            <p class="lead">Build a graph, switch directed or undirected mode, then run traversals and shortest paths in the browser.</p>
+            <h1>Graph Visualizer</h1>
+            <p class="lead">Build a graph interactively, switch directed/undirected mode, and run classic algorithms with live step-by-step animation.</p>
         </header>
 
         {% with messages = get_flashed_messages(with_categories=true) %}
@@ -28,10 +29,18 @@
 
         <div class="layout">
             <main class="layout-main">
+
+                <!-- ── Graph mode ── -->
                 <section class="panel">
                     <h2>Graph mode</h2>
                     <div class="mode-badge {{ 'undirected' if not graph.directed else '' }}">
                         {% if graph.directed %}Directed{% else %}Undirected{% endif %} graph
+                        &nbsp;·&nbsp; {{ graph.node | length }} nodes &nbsp;·&nbsp;
+                        {% if graph.directed %}
+                            {{ graph.adjacency.values() | map('length') | sum }} edges
+                        {% else %}
+                            {{ (graph.adjacency.values() | map('length') | sum) // 2 }} edges
+                        {% endif %}
                     </div>
                     <form action="{{ url_for('set_mode') }}" method="POST" class="form-grid">
                         <div class="radio-row">
@@ -39,158 +48,283 @@
                             <label><input type="radio" name="direction" value="Undirected Graph" {% if not graph.directed %}checked{% endif %}> Undirected</label>
                         </div>
                         <div class="btn-row">
-                            <button type="submit" class="btn btn-primary">Apply mode</button>
+                            <button type="submit" class="btn btn-primary" id="apply-mode-btn">Apply mode</button>
                         </div>
                         <p class="empty-hint">Switching mode clears the graph so adjacency stays consistent.</p>
                     </form>
                     <form action="{{ url_for('reset') }}" method="POST" class="btn-row" style="margin-top:1rem;">
-                        <button type="submit" class="btn btn-ghost">Clear graph</button>
+                        <button type="submit" class="btn btn-ghost" id="clear-graph-btn">Clear graph</button>
                     </form>
                 </section>
 
+                <!-- ── Structure ── -->
                 <section class="panel">
                     <h2>Structure</h2>
+                    <p class="empty-hint" style="margin-bottom:0.75rem;">Tip: click the canvas to add a node, drag between nodes to add an edge.</p>
                     <div class="form-grid">
-                        <form action="{{ url_for('add_n') }}" method="POST">
+                        <form action="{{ url_for('add_n') }}" method="POST" id="add-node-form">
                             <label for="add-node-id">Add node</label>
                             <input id="add-node-id" type="text" name="node_id" placeholder="e.g. A" autocomplete="off">
-                            <div class="btn-row"><button type="submit" class="btn btn-primary">Add node</button></div>
+                            <div class="btn-row"><button type="submit" class="btn btn-primary" id="add-node-btn">Add node</button></div>
                         </form>
-                        <form action="{{ url_for('add_e') }}" method="POST">
+                        <form action="{{ url_for('add_e') }}" method="POST" id="add-edge-form">
                             <label>Add edge</label>
-                            <input type="text" name="u" placeholder="From" autocomplete="off">
-                            <input type="text" name="v" placeholder="To" autocomplete="off">
-                            <input type="text" name="w" placeholder="Weight (default 1)" autocomplete="off">
-                            <div class="btn-row"><button type="submit" class="btn btn-primary">Add edge</button></div>
+                            <input id="edge-from" type="text" name="u" placeholder="From" autocomplete="off">
+                            <input id="edge-to" type="text" name="v" placeholder="To" autocomplete="off">
+                            <input id="edge-weight" type="text" name="w" placeholder="Weight (default 1)" autocomplete="off">
+                            <div class="btn-row"><button type="submit" class="btn btn-primary" id="add-edge-btn">Add edge</button></div>
                         </form>
                         <form action="{{ url_for('del_n') }}" method="POST">
                             <label for="del-node-id">Delete node</label>
                             <input id="del-node-id" type="text" name="node_id" placeholder="Node id" autocomplete="off">
-                            <div class="btn-row"><button type="submit" class="btn btn-danger">Delete node</button></div>
+                            <div class="btn-row"><button type="submit" class="btn btn-danger" id="del-node-btn">Delete node</button></div>
                         </form>
                         <form action="{{ url_for('del_e') }}" method="POST">
                             <label>Delete edge</label>
                             <input type="text" name="u" placeholder="From" autocomplete="off">
                             <input type="text" name="v" placeholder="To" autocomplete="off">
-                            <div class="btn-row"><button type="submit" class="btn btn-danger">Delete edge</button></div>
+                            <div class="btn-row"><button type="submit" class="btn btn-danger" id="del-edge-btn">Delete edge</button></div>
                         </form>
                     </div>
                 </section>
 
+                <!-- ── Algorithms ── -->
                 <section class="panel">
                     <h2>Algorithms</h2>
-                    <p class="empty-hint">Start node must exist in the graph.</p>
+                    <p class="empty-hint" style="margin-bottom:0.75rem;">Start node must exist in the graph.</p>
                     <div class="form-grid">
+
+                        <!-- BFS -->
                         <form action="{{ url_for('bfs_traversal') }}" method="POST">
-                            <label for="bfs-start">Breadth-first search</label>
+                            <label for="bfs-start">Breadth-first search <span style="color:var(--muted);font-weight:400;">O(V+E)</span></label>
                             <input id="bfs-start" type="text" name="node_id" placeholder="Start node" autocomplete="off">
-                            <div class="btn-row"><button type="submit" class="btn btn-primary">Run BFS</button></div>
+                            <div class="btn-row"><button type="submit" class="btn btn-primary" id="run-bfs-btn">Run BFS</button></div>
                         </form>
                         {% if bfs_result is defined and bfs_result is not none %}
-                        <div class="result-box"><strong>BFS order:</strong> {{ bfs_result | join(' → ') }}</div>
+                        <div class="result-box">
+                            <strong>BFS order:</strong> {{ bfs_result | join(' → ') }}
+                        </div>
                         {% endif %}
 
+                        <!-- DFS -->
                         <form action="{{ url_for('dfs_traversal') }}" method="POST">
-                            <label for="dfs-start">Depth-first search</label>
+                            <label for="dfs-start">Depth-first search <span style="color:var(--muted);font-weight:400;">O(V+E)</span></label>
                             <input id="dfs-start" type="text" name="node_id" placeholder="Start node" autocomplete="off">
-                            <div class="btn-row"><button type="submit" class="btn btn-primary">Run DFS</button></div>
+                            <div class="btn-row"><button type="submit" class="btn btn-primary" id="run-dfs-btn">Run DFS</button></div>
                         </form>
                         {% if dfs_result is defined and dfs_result is not none %}
-                        <div class="result-box"><strong>DFS order:</strong> {{ dfs_result | join(' → ') }}</div>
+                        <div class="result-box">
+                            <strong>DFS order:</strong> {{ dfs_result | join(' → ') }}
+                        </div>
                         {% endif %}
 
+                        <!-- Dijkstra -->
                         <form action="{{ url_for('dijkstra_path') }}" method="POST">
-                            <label for="dijk-start">Dijkstra (min-heap)</label>
+                            <label for="dijk-start">Dijkstra — non-negative weights <span style="color:var(--muted);font-weight:400;">O((V+E)logV)</span></label>
                             <input id="dijk-start" type="text" name="node_id" placeholder="Start node" autocomplete="off">
-                            <div class="btn-row"><button type="submit" class="btn btn-primary">Run Dijkstra</button></div>
+                            <div class="btn-row"><button type="submit" class="btn btn-primary" id="run-dijkstra-btn">Run Dijkstra</button></div>
                         </form>
                         {% if dijkstra_result is defined and dijkstra_result is not none %}
-                        <div class="result-box"><strong>Distances:</strong>
+                        <div class="result-box">
+                            <strong>Distances:</strong>
                             {% for node, dist in dijkstra_result.items() %}
                             {{ node }}: {{ dist | fmt_dist }}{% if not loop.last %}; {% endif %}
                             {% endfor %}
                         </div>
                         {% endif %}
 
+                        <!-- Bellman-Ford -->
+                        <form action="{{ url_for('bellman_ford_path') }}" method="POST">
+                            <label for="bf-start">Bellman-Ford — handles negative weights <span style="color:var(--muted);font-weight:400;">O(V·E)</span></label>
+                            <input id="bf-start" type="text" name="node_id" placeholder="Start node" autocomplete="off">
+                            <div class="btn-row"><button type="submit" class="btn btn-primary" id="run-bf-btn">Run Bellman-Ford</button></div>
+                        </form>
+                        {% if bellman_ford_result is defined and bellman_ford_result is not none %}
+                        <div class="result-box {% if bellman_ford_neg_cycle %}warning{% endif %}">
+                            {% if bellman_ford_neg_cycle %}
+                            <strong>⚠ Negative cycle detected</strong> — shortest paths are undefined.
+                            {% else %}
+                            <strong>Distances:</strong>
+                            {% for node, dist in bellman_ford_result.items() %}
+                            {{ node }}: {{ dist | fmt_dist }}{% if not loop.last %}; {% endif %}
+                            {% endfor %}
+                            {% endif %}
+                        </div>
+                        {% endif %}
+
+                        <!-- MST -->
+                        <form action="{{ url_for('mst_compute') }}" method="POST">
+                            <label>Kruskal MST — with Union-Find <span style="color:var(--muted);font-weight:400;">O(E logE)</span></label>
+                            <p class="empty-hint">Works on undirected graphs (edges treated as undirected).</p>
+                            <div class="btn-row"><button type="submit" class="btn btn-primary" id="run-mst-btn">Run Kruskal MST</button></div>
+                        </form>
+                        {% if mst_edges is defined %}
+                        <div class="result-box">
+                            <strong>MST edges:</strong>
+                            {% if mst_edges %}
+                            {{ mst_edges | map(attribute=0) | zip(mst_edges | map(attribute=1)) | list | map('join', ' – ') | join(', ') }}
+                            &nbsp;·&nbsp; Total weight: {{ mst_total }}
+                            {% else %}
+                            No edges (empty or single-node graph).
+                            {% endif %}
+                        </div>
+                        {% endif %}
+
+                        <!-- SCC -->
+                        <form action="{{ url_for('scc_compute') }}" method="POST">
+                            <label>Tarjan SCC — strongly connected components <span style="color:var(--muted);font-weight:400;">O(V+E)</span></label>
+                            <p class="empty-hint">Directed graphs only. Each SCC shown in a distinct colour.</p>
+                            <div class="btn-row"><button type="submit" class="btn btn-primary" id="run-scc-btn">Run Tarjan SCC</button></div>
+                        </form>
+                        {% if scc_result is defined %}
+                        <div class="result-box">
+                            <strong>{{ scc_result | length }} SCC(s):</strong>
+                            {% for scc in scc_result %}
+                            { {{ scc | join(', ') }} }{% if not loop.last %}, {% endif %}
+                            {% endfor %}
+                        </div>
+                        {% endif %}
+
+                        <!-- Cycle -->
                         <form action="{{ url_for('detect_cycle') }}" method="POST">
-                            <label>Cycle detection</label>
+                            <label>Cycle detection <span style="color:var(--muted);font-weight:400;">O(V+E)</span></label>
                             <p class="empty-hint">Uses directed or undirected rules based on current mode.</p>
-                            <div class="btn-row"><button type="submit" class="btn btn-primary">Check for cycle</button></div>
+                            <div class="btn-row"><button type="submit" class="btn btn-primary" id="run-cycle-btn">Check for cycle</button></div>
                         </form>
                         {% if cycle_result is defined %}
                         <div class="result-box"><strong>Result:</strong> {{ cycle_result }}</div>
                         {% endif %}
 
+                        <!-- Topo Sort -->
                         <form action="{{ url_for('topo_sort') }}" method="POST">
-                            <label>Topological sort</label>
-                            <p class="empty-hint">Directed acyclic graphs only. Fails if a directed cycle exists.</p>
-                            <div class="btn-row"><button type="submit" class="btn btn-primary">Topological sort</button></div>
+                            <label>Topological sort — Kahn's algorithm <span style="color:var(--muted);font-weight:400;">O(V+E)</span></label>
+                            <p class="empty-hint">Directed acyclic graphs only.</p>
+                            <div class="btn-row"><button type="submit" class="btn btn-primary" id="run-topo-btn">Topological sort</button></div>
                         </form>
                         {% if topo_result is defined %}
                         <div class="result-box"><strong>Order:</strong> {{ topo_result }}</div>
                         {% endif %}
                     </div>
                 </section>
+
+
             </main>
 
             <aside class="layout-sidebar layout-sidebar--sticky" aria-label="Graph visualization and state">
+                <!-- ── Canvas ── -->
                 <section class="panel graph-viz-panel" aria-labelledby="graph-viz-heading">
                     <h2 id="graph-viz-heading">2D graph view</h2>
-                    <p class="empty-hint">Layout updates after each change. Directed mode shows arrowheads.</p>
+                    <p class="empty-hint">Click canvas to add a node. Drag node→node to add an edge. Right-click a node for options.</p>
                     <div class="btn-row graph-viz-toolbar">
                         <button type="button" class="btn btn-ghost" id="graph-viz-shuffle">Shuffle layout</button>
+                        <button type="button" class="btn btn-ghost" id="graph-viz-zoom-in" title="Zoom in">+</button>
+                        <button type="button" class="btn btn-ghost" id="graph-viz-zoom-out" title="Zoom out">−</button>
+                        <button type="button" class="btn btn-ghost" id="graph-viz-zoom-reset" title="Reset zoom">⊙</button>
                     </div>
+
+                    <!-- Data blobs for the JS renderer -->
                     <script id="graph-viz-json" type="application/json">{{ graph_viz | tojson }}</script>
                     <script id="graph-viz-traversal" type="application/json">{{ viz_traversal | default([]) | tojson }}</script>
                     <script id="graph-viz-trace" type="application/json">{{ viz_trace | default([]) | tojson }}</script>
-                    <p class="graph-viz-step" id="graph-viz-step" hidden></p>
+                    <script id="graph-viz-mst" type="application/json">{{ viz_mst_edges | default([]) | tojson }}</script>
+                    <script id="graph-viz-sccs" type="application/json">{{ viz_sccs | default([]) | tojson }}</script>
+
                     <div class="graph-viz-host" id="graph-viz-host">
                         <canvas id="graph-viz-canvas" role="img" aria-label="Graph structure"></canvas>
-                        <p class="graph-viz-empty" id="graph-viz-empty">Add nodes and edges to see the graph drawn here.</p>
+                        <p class="graph-viz-empty" id="graph-viz-empty">
+                            <span class="hint-icon">⬡</span>
+                            Click anywhere here to add your first node.
+                        </p>
+                    </div>
+
+                    <!-- Playback controls -->
+                    <div class="playback-bar" id="playback-bar" hidden>
+                        <button class="playback-btn" id="pb-reset" title="Reset to start">⏮</button>
+                        <button class="playback-btn" id="pb-prev" title="Previous step">‹</button>
+                        <button class="playback-btn" id="pb-play" title="Play / Pause">▶</button>
+                        <button class="playback-btn" id="pb-next" title="Next step">›</button>
+                        <button class="playback-btn" id="pb-end" title="Jump to end">⏭</button>
+                        <span class="playback-step-label" id="pb-label"></span>
+                        <span class="speed-label">Speed</span>
+                        <input type="range" class="speed-slider" id="pb-speed" min="1" max="5" value="3" title="Playback speed">
                     </div>
                 </section>
 
+                <!-- ── Live graph state ── -->
                 <section class="panel graph-state">
-                <h2>Live graph state</h2>
-                <div class="graph-columns">
-                    <div>
-                        <h2 style="font-size:0.75rem;margin-bottom:0.5rem;">Nodes ({{ graph.node | length }})</h2>
-                        {% if graph.node %}
-                        <ul class="pill-list">
-                            {% for node in graph.node %}
-                            <li>{{ node }}</li>
-                            {% endfor %}
-                        </ul>
-                        {% else %}
-                        <p class="empty-hint">No nodes yet.</p>
-                        {% endif %}
+                    <h2>Live graph state</h2>
+                    <div class="graph-columns">
+                        <div>
+                            <h2 style="font-size:0.75rem;margin-bottom:0.5rem;">Nodes ({{ graph.node | length }})</h2>
+                            {% if graph.node %}
+                            <ul class="pill-list">
+                                {% for node in graph.node %}
+                                <li>{{ node }}</li>
+                                {% endfor %}
+                            </ul>
+                            {% else %}
+                            <p class="empty-hint">No nodes yet.</p>
+                            {% endif %}
+                        </div>
+                        <div>
+                            <h2 style="font-size:0.75rem;margin-bottom:0.5rem;">Edges</h2>
+                            {% set edge_ns = namespace(any=false) %}
+                            <ul class="edge-list">
+                                {% for node, neighbours in graph.adjacency.items() %}
+                                {% for target, w in neighbours.items() %}
+                                {% set edge_ns.any = true %}
+                                <li><code>{{ node }} → {{ target }}</code> ({{ w }})</li>
+                                {% endfor %}
+                                {% endfor %}
+                            </ul>
+                            {% if graph.node and not edge_ns.any %}
+                            <p class="empty-hint">No edges yet.</p>
+                            {% elif not graph.node %}
+                            <p class="empty-hint">Add nodes to begin.</p>
+                            {% endif %}
+                        </div>
                     </div>
-                    <div>
-                        <h2 style="font-size:0.75rem;margin-bottom:0.5rem;">Edges</h2>
-                        {% set edge_ns = namespace(any=false) %}
-                        <ul class="edge-list">
-                            {% for node, neighbours in graph.adjacency.items() %}
-                            {% for target, w in neighbours.items() %}
-                            {% set edge_ns.any = true %}
-                            <li><code>{{ node }} → {{ target }}</code> ({{ w }})</li>
-                            {% endfor %}
-                            {% endfor %}
-                        </ul>
-                        {% if graph.node and not edge_ns.any %}
-                        <p class="empty-hint">No edges yet.</p>
-                        {% elif not graph.node %}
-                        <p class="empty-hint">Add nodes to begin.</p>
-                        {% endif %}
-                    </div>
-                </div>
+                </section>
+
+                <!-- ── API docs link ── -->
+                <section class="panel" style="padding:0.85rem 1.1rem;">
+                    <p style="margin:0;font-size:0.8125rem;color:var(--muted);">
+                        REST API available at
+                        <a href="/api/docs" target="_blank" id="api-docs-link"><code>/api/docs</code></a>
+                        — Swagger UI with all endpoints documented.
+                    </p>
                 </section>
             </aside>
         </div>
 
         <footer class="page-footer">
-            Flask + Jinja2 · Educational graph playground
+            <span>Flask · Vanilla JS · Graph algorithms from scratch</span>
+            <a href="/api/docs" id="footer-api-link">API Docs</a>
+            <a href="https://github.com" id="footer-github-link">GitHub</a>
         </footer>
     </div>
+
+    <!-- Context menu (right-click on node) -->
+    <div class="canvas-context-menu" id="canvas-ctx-menu" hidden>
+        <button class="ctx-menu-item" id="ctx-set-start">Set as start node</button>
+        <button class="ctx-menu-item" id="ctx-set-end">Set as end node</button>
+        <div class="ctx-menu-sep"></div>
+        <button class="ctx-menu-item danger" id="ctx-delete-node">Delete node</button>
+    </div>
+
+    <!-- Prompt overlay: add node on canvas click -->
+    <div class="canvas-prompt-overlay" id="canvas-prompt-overlay" hidden>
+        <div class="canvas-prompt-box">
+            <h3 id="canvas-prompt-title">Add node</h3>
+            <input id="canvas-prompt-input" type="text" placeholder="Node name (e.g. A)" autocomplete="off">
+            <div id="canvas-prompt-extra"></div>
+            <div class="canvas-prompt-actions">
+                <button class="btn btn-ghost btn-sm" id="canvas-prompt-cancel">Cancel</button>
+                <button class="btn btn-primary btn-sm" id="canvas-prompt-confirm">Add</button>
+            </div>
+        </div>
+    </div>
+
     <script src="{{ url_for('static', filename='graph-viz.js') }}"></script>
 </body>
 </html>

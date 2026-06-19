@@ -1,657 +1,758 @@
-(function () {
-  "use strict";
+/**
+ * graph-viz.js — Interactive canvas renderer for the Graph Visualizer.
+ *
+ * Features:
+ *   • Click-to-add nodes (canvas click → prompt overlay)
+ *   • Drag-to-connect edges (drag from node → node)
+ *   • Drag-to-move nodes (drag node → new position)
+ *   • Right-click context menu per node
+ *   • Zoom / pan with mouse wheel and toolbar buttons
+ *   • Step-by-step algorithm playback from server-returned order arrays
+ *   • MST edge highlighting and SCC colour mapping
+ *
+ * All state is local to this module; communication with Flask is via
+ * standard HTML form submissions (no fetch needed for the core flow).
+ */
 
-  var SCROLL_KEY = "graphVizScrollY";
+"use strict";
 
-  document.addEventListener(
-    "submit",
-    function () {
-      try {
-        sessionStorage.setItem(
-          SCROLL_KEY,
-          String(window.scrollY || window.pageYOffset || 0)
-        );
-      } catch (e) {}
-    },
-    true
-  );
+// -------------------------------------------------------------------------
+// Scroll position persistence across form submissions
+// -------------------------------------------------------------------------
 
-  function restoreScrollAfterFormPost() {
-    try {
-      var raw = sessionStorage.getItem(SCROLL_KEY);
-      if (raw === null) return;
-      sessionStorage.removeItem(SCROLL_KEY);
-      var y = parseInt(raw, 10);
-      if (isNaN(y) || y < 0) return;
-      function apply() {
-        window.scrollTo(0, y);
+window.addEventListener("beforeunload", () => {
+  sessionStorage.setItem("graph-viz-scroll", window.scrollY);
+});
+
+const savedScroll = sessionStorage.getItem("graph-viz-scroll");
+if (savedScroll !== null) {
+  // Use a slight timeout to ensure DOM is fully laid out before scrolling
+  setTimeout(() => window.scrollTo(0, parseInt(savedScroll, 10)), 0);
+}
+
+// -------------------------------------------------------------------------
+// Data hydration from server-injected <script type="application/json"> tags
+// -------------------------------------------------------------------------
+
+function readJSON(id, fallback) {
+  const el = document.getElementById(id);
+  if (!el) return fallback;
+  try {
+    return JSON.parse(el.textContent);
+  } catch {
+    return fallback;
+  }
+}
+
+const graphData   = readJSON("graph-viz-json",    { nodes: [], edges: [], directed: false });
+const traversal   = readJSON("graph-viz-traversal", []);
+const trace       = readJSON("graph-viz-trace",    []);
+const mstEdgeData = readJSON("graph-viz-mst",      []);
+const sccData     = readJSON("graph-viz-sccs",     []);
+
+// -------------------------------------------------------------------------
+// Canvas setup
+// -------------------------------------------------------------------------
+
+const host   = document.getElementById("graph-viz-host");
+const canvas = document.getElementById("graph-viz-canvas");
+const ctx    = canvas.getContext("2d");
+const empty  = document.getElementById("graph-viz-empty");
+
+let W = 0, H = 0;
+
+function resize() {
+  const rect = host.getBoundingClientRect();
+  W = rect.width  || 700;
+  H = Math.max(rect.height, 340);
+  canvas.width  = W * devicePixelRatio;
+  canvas.height = H * devicePixelRatio;
+  canvas.style.width  = W + "px";
+  canvas.style.height = H + "px";
+  ctx.scale(devicePixelRatio, devicePixelRatio);
+  ensurePositions();
+  render();
+}
+
+const ro = new ResizeObserver(resize);
+ro.observe(host);
+
+// -------------------------------------------------------------------------
+// Colour palette
+// -------------------------------------------------------------------------
+
+const COLOURS = {
+  bg:           "#0f1419",
+  surface:      "#1a2332",
+  border:       "#2d3a4f",
+  text:         "#e8edf4",
+  muted:        "#8b9cb3",
+  accent:       "#3d9cf5",
+  accentDim:    "#2b7fc4",
+  success:      "#34c759",
+  warning:      "#f5a623",
+  error:        "#ff5c5c",
+  nodeDefault:  "#1f3050",
+  nodeStroke:   "#3d9cf5",
+  nodeVisited:  "#0c3d70",
+  nodeActive:   "#3d9cf5",
+  nodeFinal:    "#34c759",
+  edgeDefault:  "#2d3a4f",
+  edgeMST:      "#f5a623",
+  edgePath:     "#3d9cf5",
+};
+
+const SCC_PALETTE = [
+  "#3d9cf5", "#34c759", "#f5a623", "#ff5c5c",
+  "#af52de", "#5ac8fa", "#ffcc00", "#ff3b30",
+];
+
+// -------------------------------------------------------------------------
+// Node layout state
+// -------------------------------------------------------------------------
+
+/**
+ * positions: { [nodeId]: { x, y } }
+ * Persisted in sessionStorage so layout survives page reloads.
+ */
+let positions = {};
+
+function loadPositions() {
+  try {
+    const raw = sessionStorage.getItem("graph-viz-positions");
+    if (raw) {
+      positions = JSON.parse(raw);
+      // Auto-repair any nodes that got stuck at (0, 0) during the previous W=0 bug
+      for (const id in positions) {
+        if (positions[id].x === 0 && positions[id].y === 0) {
+          delete positions[id];
+        }
       }
-      apply();
-      requestAnimationFrame(function () {
-        requestAnimationFrame(apply);
-      });
-      window.setTimeout(apply, 100);
-    } catch (e) {}
+    }
+  } catch {}
+}
+
+function savePositions() {
+  try {
+    sessionStorage.setItem("graph-viz-positions", JSON.stringify(positions));
+  } catch {}
+}
+
+function ensurePositions() {
+  const nodes = graphData.nodes;
+  if (!nodes.length) return;
+
+  const known = new Set(Object.keys(positions));
+  const incoming = new Set(nodes);
+
+  // Remove stale nodes
+  for (const id of known) {
+    if (!incoming.has(id)) delete positions[id];
   }
 
-  var NODE_R = 22;
-  var PAD = 44;
-  var MIN_H = 300;
-  var STEP_MS = 620;
+  // Assign positions for new nodes
+  const newNodes = nodes.filter(n => !known.has(n));
+  if (!newNodes.length) return;
 
-  var state = {
-    layout: null,
-    data: null,
-    seed: 1,
-    cssW: 0,
-    cssH: 0,
-    ctx: null,
-    traversal: [],
-    trace: [],
-    animStep: 0,
-    animTimer: null,
-    pulseRaf: null,
+  // If we already have layout, scatter new nodes near the centroid
+  const existing = Object.values(positions);
+  if (existing.length) {
+    const cx = existing.reduce((s, p) => s + p.x, 0) / existing.length;
+    const cy = existing.reduce((s, p) => s + p.y, 0) / existing.length;
+    newNodes.forEach((id, i) => {
+      const angle = (2 * Math.PI * i) / Math.max(newNodes.length, 1);
+      const r = 80 + Math.random() * 60;
+      positions[id] = {
+        x: cx + r * Math.cos(angle),
+        y: cy + r * Math.sin(angle),
+      };
+    });
+  } else {
+    // Initial circular layout
+    const n = nodes.length;
+    const cx = W * 0.5, cy = H * 0.5;
+    const r = Math.min(W, H) * 0.35;
+    nodes.forEach((id, i) => {
+      const angle = (2 * Math.PI * i) / n - Math.PI / 2;
+      positions[id] = { x: cx + r * Math.cos(angle), y: cy + r * Math.sin(angle) };
+    });
+  }
+  savePositions();
+}
+
+loadPositions();
+
+// -------------------------------------------------------------------------
+// Transform (zoom / pan)
+// -------------------------------------------------------------------------
+
+let transform = { x: 0, y: 0, scale: 1 };
+
+function toCanvas(wx, wy) {
+  return {
+    x: (wx - transform.x) / transform.scale,
+    y: (wy - transform.y) / transform.scale,
   };
+}
 
-  function mulberry32(seed) {
-    return function () {
-      var t = (seed += 0x6d2b79f5);
-      t = Math.imul(t ^ (t >>> 15), t | 1);
-      t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
-      return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
-    };
+function toWorld(cx, cy) {
+  return {
+    x: cx * transform.scale + transform.x,
+    y: cy * transform.scale + transform.y,
+  };
+}
+
+function applyZoom(delta, cx, cy) {
+  const MIN = 0.3, MAX = 4;
+  const newScale = Math.min(MAX, Math.max(MIN, transform.scale * delta));
+  const ratio = newScale / transform.scale;
+  transform.x = cx - ratio * (cx - transform.x);
+  transform.y = cy - ratio * (cy - transform.y);
+  transform.scale = newScale;
+  render();
+}
+
+// -------------------------------------------------------------------------
+// Algorithm playback state
+// -------------------------------------------------------------------------
+
+let playback = {
+  steps:    [],     // array of nodeId strings (visit order)
+  current:  -1,     // current step index (-1 = show all final)
+  timer:    null,
+  playing:  false,
+  speedMs:  700,    // ms per step
+};
+
+const PB_SPEED_MAP = [1200, 900, 600, 350, 150]; // index 0..4
+
+const pbBar   = document.getElementById("playback-bar");
+const pbLabel = document.getElementById("pb-label");
+const pbPlay  = document.getElementById("pb-play");
+
+function initPlayback(steps) {
+  if (!steps || !steps.length) { pbBar.hidden = true; return; }
+  playback.steps   = steps;
+  playback.current = -1;
+  playback.playing = false;
+  stopPlaybackTimer();
+  pbBar.hidden = false;
+  updatePbLabel();
+  render();
+}
+
+function updatePbLabel() {
+  const total = playback.steps.length;
+  const cur   = playback.current;
+  if (cur < 0)            pbLabel.textContent = `Ready — ${total} steps`;
+  else if (cur >= total)  pbLabel.textContent = `Done (${total}/${total})`;
+  else                    pbLabel.textContent = `Step ${cur + 1}/${total}: visit "${playback.steps[cur]}"`;
+  pbPlay.textContent = playback.playing ? "⏸" : "▶";
+  pbPlay.classList.toggle("active", playback.playing);
+}
+
+function stopPlaybackTimer() {
+  if (playback.timer) { clearInterval(playback.timer); playback.timer = null; }
+  playback.playing = false;
+}
+
+function stepPlayback(dir) {
+  const total = playback.steps.length;
+  playback.current = Math.max(-1, Math.min(total, playback.current + dir));
+  updatePbLabel();
+  render();
+}
+
+document.getElementById("pb-reset").addEventListener("click", () => {
+  stopPlaybackTimer(); playback.current = -1; updatePbLabel(); render();
+});
+document.getElementById("pb-prev").addEventListener("click", () => {
+  stopPlaybackTimer(); stepPlayback(-1);
+});
+document.getElementById("pb-next").addEventListener("click", () => {
+  stopPlaybackTimer(); stepPlayback(1);
+});
+document.getElementById("pb-end").addEventListener("click", () => {
+  stopPlaybackTimer(); playback.current = playback.steps.length; updatePbLabel(); render();
+});
+document.getElementById("pb-play").addEventListener("click", () => {
+  if (playback.playing) {
+    stopPlaybackTimer(); updatePbLabel(); return;
   }
-
-  function hashSeed(str) {
-    var h = 2166136261;
-    for (var i = 0; i < str.length; i++) {
-      h ^= str.charCodeAt(i);
-      h = Math.imul(h, 16777619);
-    }
-    return h >>> 0;
+  if (playback.current >= playback.steps.length) {
+    playback.current = -1;
   }
-
-  function runLayout(data, W, H, seed) {
-    var rng = mulberry32(seed);
-    var ids = data.nodes.map(function (n) {
-      return n.id;
-    });
-    var n = ids.length;
-    var pos = {};
-    var cx = W / 2;
-    var cy = H / 2;
-    var R = Math.min(W, H) * 0.3;
-    var i;
-    for (i = 0; i < n; i++) {
-      var id = ids[i];
-      var ang = (2 * Math.PI * i) / Math.max(n, 1) + rng() * 0.5;
-      var rr = R * (0.75 + 0.45 * rng());
-      pos[id] = { x: cx + rr * Math.cos(ang), y: cy + rr * Math.sin(ang) };
+  playback.playing = true;
+  updatePbLabel();
+  playback.timer = setInterval(() => {
+    playback.current++;
+    updatePbLabel();
+    render();
+    if (playback.current >= playback.steps.length) {
+      stopPlaybackTimer(); updatePbLabel();
     }
-
-    var edges = data.edges.filter(function (e) {
-      return e.from !== e.to;
-    });
-    var area = W * H;
-    var k = Math.sqrt(area / Math.max(n, 1));
-    var iter;
-
-    for (iter = 0; iter < 480; iter++) {
-      var disp = {};
-      for (i = 0; i < ids.length; i++) {
-        disp[ids[i]] = { x: 0, y: 0 };
+  }, playback.speedMs);
+});
+document.getElementById("pb-speed").addEventListener("input", function () {
+  playback.speedMs = PB_SPEED_MAP[this.value - 1];
+  if (playback.playing) {
+    stopPlaybackTimer();
+    playback.playing = true;
+    updatePbLabel();
+    playback.timer = setInterval(() => {
+      playback.current++;
+      updatePbLabel();
+      render();
+      if (playback.current >= playback.steps.length) {
+        stopPlaybackTimer(); updatePbLabel();
       }
-
-      var a, b, dx, dy, dist, fr, fa, j;
-      for (i = 0; i < ids.length; i++) {
-        for (j = i + 1; j < ids.length; j++) {
-          a = ids[i];
-          b = ids[j];
-          dx = pos[b].x - pos[a].x;
-          dy = pos[b].y - pos[a].y;
-          dist = Math.hypot(dx, dy) || 0.01;
-          fr = (k * k) / dist;
-          dx /= dist;
-          dy /= dist;
-          disp[a].x -= fr * dx;
-          disp[a].y -= fr * dy;
-          disp[b].x += fr * dx;
-          disp[b].y += fr * dy;
-        }
-      }
-
-      for (i = 0; i < edges.length; i++) {
-        var e = edges[i];
-        a = e.from;
-        b = e.to;
-        if (!pos[a] || !pos[b]) continue;
-        dx = pos[b].x - pos[a].x;
-        dy = pos[b].y - pos[a].y;
-        dist = Math.hypot(dx, dy) || 0.01;
-        fa = ((dist * dist) / k) * 0.048;
-        dx /= dist;
-        dy /= dist;
-        disp[a].x += fa * dx;
-        disp[a].y += fa * dy;
-        disp[b].x -= fa * dx;
-        disp[b].y -= fa * dy;
-      }
-
-      var t = 0.38 * (1 - iter / 480) + 0.025;
-      for (i = 0; i < ids.length; i++) {
-        id = ids[i];
-        dx = disp[id].x;
-        dy = disp[id].y;
-        var m = Math.hypot(dx, dy) || 1;
-        var step = Math.min(m, k * 0.18) * t;
-        pos[id].x += (dx / m) * step;
-        pos[id].y += (dy / m) * step;
-        pos[id].x = Math.max(PAD, Math.min(W - PAD, pos[id].x));
-        pos[id].y = Math.max(PAD, Math.min(H - PAD, pos[id].y));
-      }
-    }
-
-    fitPositions(pos, ids, W, H, PAD);
-    return { pos: pos, ids: ids, edges: data.edges };
+    }, playback.speedMs);
   }
+});
 
-  function fitPositions(pos, ids, W, H, pad) {
-    if (!ids.length) return;
-    var minX = Infinity;
-    var minY = Infinity;
-    var maxX = -Infinity;
-    var maxY = -Infinity;
-    var i;
-    for (i = 0; i < ids.length; i++) {
-      var p = pos[ids[i]];
-      minX = Math.min(minX, p.x);
-      minY = Math.min(minY, p.y);
-      maxX = Math.max(maxX, p.x);
-      maxY = Math.max(maxY, p.y);
-    }
-    var bw = maxX - minX || 1;
-    var bh = maxY - minY || 1;
-    var scale = Math.min((W - 2 * pad) / bw, (H - 2 * pad) / bh);
-    if (!isFinite(scale) || scale <= 0) scale = 1;
-    var cx = (minX + maxX) / 2;
-    var cy = (minY + maxY) / 2;
-    var tcx = W / 2;
-    var tcy = H / 2;
-    for (i = 0; i < ids.length; i++) {
-      var id = ids[i];
-      pos[id].x = (pos[id].x - cx) * scale + tcx;
-      pos[id].y = (pos[id].y - cy) * scale + tcy;
-    }
-  }
+// Start playback if traversal data was returned from server
+if (traversal.length) { initPlayback(traversal); }
 
-  function shortenSegment(x1, y1, x2, y2, r1, r2) {
-    var dx = x2 - x1;
-    var dy = y2 - y1;
-    var dist = Math.hypot(dx, dy);
-    if (dist < 1e-6) return null;
-    dx /= dist;
-    dy /= dist;
-    return {
-      x1: x1 + dx * r1,
-      y1: y1 + dy * r1,
-      x2: x2 - dx * r2,
-      y2: y2 - dy * r2,
-    };
-  }
+// -------------------------------------------------------------------------
+// SCC colour map
+// -------------------------------------------------------------------------
 
-  function drawArrowHead(ctx, x, y, angle, color) {
-    var sz = 12;
-    ctx.save();
-    ctx.translate(x, y);
-    ctx.rotate(angle);
-    ctx.fillStyle = color;
+const sccColourMap = {}; // nodeId → colour string
+if (sccData.length) {
+  sccData.forEach((scc, i) => {
+    const colour = SCC_PALETTE[i % SCC_PALETTE.length];
+    scc.forEach(nodeId => { sccColourMap[nodeId] = colour; });
+  });
+}
+
+// -------------------------------------------------------------------------
+// MST edge set
+// -------------------------------------------------------------------------
+
+const mstEdgeSet = new Set();
+mstEdgeData.forEach(([u, v]) => {
+  mstEdgeSet.add(`${u}|${v}`);
+  mstEdgeSet.add(`${v}|${u}`);
+});
+
+// -------------------------------------------------------------------------
+// Render
+// -------------------------------------------------------------------------
+
+const NODE_R = 22;
+
+function visitedUpTo(idx) {
+  return new Set(idx < 0 ? [] : playback.steps.slice(0, idx + 1));
+}
+
+function render() {
+  ctx.clearRect(0, 0, W, H);
+
+  // Show empty hint?
+  empty.style.display = graphData.nodes.length ? "none" : "flex";
+
+  ctx.save();
+  ctx.translate(transform.x, transform.y);
+  ctx.scale(transform.scale, transform.scale);
+
+  const visited = visitedUpTo(playback.current);
+  const activeNode = playback.current >= 0 && playback.current < playback.steps.length
+    ? playback.steps[playback.current] : null;
+
+  // ---- Draw edges ----
+  graphData.edges.forEach(({ u, v, w }) => {
+    const pu = positions[u], pv = positions[v];
+    if (!pu || !pv) return;
+
+    const isMST  = mstEdgeSet.has(`${u}|${v}`);
+    const isPath = visited.has(u) && visited.has(v);
+
     ctx.beginPath();
-    ctx.moveTo(0, 0);
-    ctx.lineTo(-sz, -sz * 0.55);
-    ctx.lineTo(-sz, sz * 0.55);
-    ctx.closePath();
-    ctx.fill();
-    ctx.restore();
-  }
+    ctx.lineWidth = isMST ? 3.5 : isPath ? 2.5 : 1.5;
+    ctx.strokeStyle = isMST ? COLOURS.edgeMST
+                    : isPath ? COLOURS.edgePath
+                    : COLOURS.edgeDefault;
 
-  function drawSelfLoop(ctx, x, y, directed, stroke) {
-    var cx = x + NODE_R + 18;
-    var cy = y - 26;
-    var loopR = 24;
-    ctx.strokeStyle = stroke;
-    ctx.lineWidth = 3;
-    ctx.beginPath();
-    ctx.arc(cx, cy, loopR, 0.35 * Math.PI, 1.65 * Math.PI, true);
-    ctx.stroke();
-    if (directed) {
-      var ang = 1.65 * Math.PI + Math.PI / 2;
-      var px = cx + loopR * Math.cos(1.65 * Math.PI);
-      var py = cy + loopR * Math.sin(1.65 * Math.PI);
-      drawArrowHead(ctx, px, py, ang, stroke);
-    }
-  }
-
-  function formatWeight(w) {
-    var f = Number(w);
-    if (Number.isInteger(f)) return String(f);
-    return String(Math.round(f * 1000) / 1000);
-  }
-
-  function drawEdgeLabel(ctx, text, mx, my) {
-    ctx.font = '500 10px "JetBrains Mono", Consolas, monospace';
-    var padX = 4;
-    var padY = 2;
-    var m = ctx.measureText(text);
-    var w = m.width + padX * 2;
-    var h = 12 + padY * 2;
-    ctx.fillStyle = "rgba(15, 20, 25, 0.92)";
-    ctx.strokeStyle = "rgba(45, 58, 79, 0.95)";
-    ctx.lineWidth = 1;
-    var rx = mx - w / 2;
-    var ry = my - h / 2;
-    ctx.beginPath();
-    if (typeof ctx.roundRect === "function") {
-      ctx.roundRect(rx, ry, w, h, 3);
+    if (graphData.directed) {
+      drawArrow(ctx, pu.x, pu.y, pv.x, pv.y);
     } else {
-      ctx.rect(rx, ry, w, h);
+      ctx.moveTo(pu.x, pu.y);
+      ctx.lineTo(pv.x, pv.y);
     }
-    ctx.fill();
     ctx.stroke();
-    ctx.fillStyle = "#8b9cb3";
-    ctx.textAlign = "center";
-    ctx.textBaseline = "middle";
-    ctx.fillText(text, mx, my);
-  }
 
-  function buildHighlightState(traversal, step) {
-    var len = traversal.length;
-    var orderById = {};
-    var i;
-    for (i = 0; i < step && i < len; i++) {
-      orderById[traversal[i]] = i + 1;
+    // Weight label
+    if (w !== undefined && w !== null) {
+      const mx = (pu.x + pv.x) / 2;
+      const my = (pu.y + pv.y) / 2;
+      ctx.save();
+      ctx.font = "600 11px 'JetBrains Mono', monospace";
+      ctx.fillStyle = isMST ? COLOURS.edgeMST : COLOURS.muted;
+      ctx.textAlign = "center";
+      ctx.textBaseline = "middle";
+      ctx.fillText(w, mx + 6, my - 6);
+      ctx.restore();
     }
-    var current = null;
-    if (step < len) {
-      current = traversal[step];
-    }
-    return {
-      orderById: orderById,
-      current: current,
-      onStack: {},
-      useStack: false,
-    };
-  }
+  });
 
-  function buildHighlightFromTrace(trace, step) {
-    var len = trace.length;
-    var orderById = {};
-    var i;
-    for (i = 0; i < step && i < len; i++) {
-      orderById[trace[i].focus] = i + 1;
-    }
-    var current = null;
-    var onStack = {};
-    if (step < len) {
-      var frame = trace[step];
-      current = frame.focus;
-      var stk = frame.stack || [];
-      for (i = 0; i < stk.length; i++) {
-        if (stk[i] !== current) {
-          onStack[stk[i]] = true;
-        }
-      }
-    }
-    return {
-      orderById: orderById,
-      current: current,
-      onStack: onStack,
-      useStack: true,
-    };
-  }
-
-  function drawOrderBadge(ctx, x, y, num, isActive) {
-    var r = 11;
-    ctx.beginPath();
-    ctx.arc(x, y + NODE_R + 14, r, 0, Math.PI * 2);
-    if (isActive) {
-      ctx.fillStyle = "rgba(245, 166, 35, 0.2)";
-      ctx.strokeStyle = "#f5a623";
-    } else {
-      ctx.fillStyle = "rgba(52, 199, 89, 0.25)";
-      ctx.strokeStyle = "#34c759";
-    }
-    ctx.lineWidth = 1.5;
-    ctx.fill();
-    ctx.stroke();
-    ctx.fillStyle = isActive ? "#ffd59a" : "#a8e9b8";
-    ctx.font = '600 10px "DM Sans", system-ui, sans-serif';
-    ctx.textAlign = "center";
-    ctx.textBaseline = "middle";
-    ctx.fillText(String(num), x, y + NODE_R + 14);
-  }
-
-  function drawNode(ctx, id, p, hi) {
-    var orderById = hi.orderById;
-    var current = hi.current;
-    var isCurrent = current === id;
-    var ord = orderById[id];
-    var onStack = hi.useStack && hi.onStack && hi.onStack[id];
-
-    if (isCurrent) {
+  // ---- Draw drag-preview edge ----
+  if (dragState.mode === "edge" && dragState.sourceId) {
+    const ps = positions[dragState.sourceId];
+    if (ps) {
       ctx.beginPath();
-      ctx.arc(p.x, p.y, NODE_R + 8, 0, Math.PI * 2);
-      ctx.strokeStyle = "rgba(255, 200, 100, 0.95)";
-      ctx.lineWidth = 3.5;
+      ctx.lineWidth = 2;
+      ctx.strokeStyle = COLOURS.accent + "99";
+      ctx.setLineDash([6, 4]);
+      ctx.moveTo(ps.x, ps.y);
+      ctx.lineTo(dragState.mx, dragState.my);
       ctx.stroke();
-    } else if (onStack) {
-      ctx.beginPath();
-      ctx.arc(p.x, p.y, NODE_R + 4, 0, Math.PI * 2);
-      ctx.strokeStyle = "rgba(201, 139, 43, 0.75)";
-      ctx.lineWidth = 2.5;
-      ctx.stroke();
+      ctx.setLineDash([]);
     }
+  }
 
+  // ---- Draw nodes ----
+  graphData.nodes.forEach(id => {
+    const p = positions[id];
+    if (!p) return;
+
+    const isVisited = visited.has(id);
+    const isActive  = id === activeNode;
+    const sccColour = sccColourMap[id];
+    const isDone    = playback.current >= playback.steps.length && traversal.includes(id);
+
+    // Node circle
     ctx.beginPath();
     ctx.arc(p.x, p.y, NODE_R, 0, Math.PI * 2);
-    if (isCurrent) {
-      ctx.fillStyle = "#4a3518";
-      ctx.strokeStyle = "#ffc964";
-    } else if (hi.useStack && onStack) {
-      ctx.fillStyle = "#352a1e";
-      ctx.strokeStyle = "#d4a04a";
-    } else if (ord !== undefined) {
-      ctx.fillStyle = "#152a24";
-      ctx.strokeStyle = "#34c759";
-    } else {
-      ctx.fillStyle = "#1e2a3d";
-      ctx.strokeStyle = "#3d9cf5";
-    }
-    ctx.lineWidth = isCurrent ? 3 : onStack ? 2.5 : 2.5;
+    ctx.fillStyle = isActive  ? COLOURS.accent
+                  : isDone    ? COLOURS.nodeFinal
+                  : isVisited ? COLOURS.nodeVisited
+                  : sccColour ? sccColour + "22"
+                  : COLOURS.nodeDefault;
     ctx.fill();
+
+    // Node stroke
+    ctx.lineWidth = isActive ? 3 : 2;
+    ctx.strokeStyle = isActive  ? COLOURS.accent
+                    : sccColour ? sccColour
+                    : isVisited ? COLOURS.accentDim
+                    : COLOURS.nodeStroke;
     ctx.stroke();
 
-    ctx.fillStyle = "#e8edf4";
-    ctx.font = '600 13px "DM Sans", system-ui, sans-serif';
+    // Glow for active
+    if (isActive) {
+      ctx.beginPath();
+      ctx.arc(p.x, p.y, NODE_R + 5, 0, Math.PI * 2);
+      ctx.lineWidth = 3;
+      ctx.strokeStyle = COLOURS.accent + "44";
+      ctx.stroke();
+    }
+
+    // Label
+    ctx.font = "700 13px 'DM Sans', system-ui, sans-serif";
+    ctx.fillStyle = isActive ? "#0a0e14" : COLOURS.text;
     ctx.textAlign = "center";
     ctx.textBaseline = "middle";
-    ctx.fillText(String(id), p.x, p.y);
-
-    if (ord !== undefined && !isCurrent) {
-      drawOrderBadge(ctx, p.x, p.y, ord, false);
-    } else if (isCurrent) {
-      var stepNum = Object.keys(orderById).length + 1;
-      drawOrderBadge(ctx, p.x, p.y, stepNum, true);
-    }
-  }
-
-  function draw(ctx, layout, data, W, H, hi) {
-    ctx.clearRect(0, 0, W, H);
-    var edgeMain = "#7eb3ea";
-    var edgeGlow = "rgba(126, 179, 234, 0.45)";
-    var pos = layout.pos;
-    var i;
-
-    for (i = 0; i < layout.edges.length; i++) {
-      var e = layout.edges[i];
-      var u = e.from;
-      var v = e.to;
-      if (!pos[u] || !pos[v]) continue;
-      var x1 = pos[u].x;
-      var y1 = pos[u].y;
-      var x2 = pos[v].x;
-      var y2 = pos[v].y;
-      if (u === v) {
-        drawSelfLoop(ctx, x1, y1, data.directed, edgeMain);
-        drawEdgeLabel(ctx, formatWeight(e.w), x1 + NODE_R + 18, y1 - 52);
-        continue;
-      }
-      var seg = shortenSegment(x1, y1, x2, y2, NODE_R, NODE_R);
-      if (!seg) continue;
-      ctx.lineCap = "round";
-      ctx.lineJoin = "round";
-      ctx.beginPath();
-      ctx.moveTo(seg.x1, seg.y1);
-      ctx.lineTo(seg.x2, seg.y2);
-      ctx.strokeStyle = edgeGlow;
-      ctx.lineWidth = 8;
-      ctx.stroke();
-      ctx.beginPath();
-      ctx.moveTo(seg.x1, seg.y1);
-      ctx.lineTo(seg.x2, seg.y2);
-      ctx.strokeStyle = edgeMain;
-      ctx.lineWidth = 3.5;
-      ctx.stroke();
-      if (data.directed) {
-        var adx = seg.x2 - seg.x1;
-        var ady = seg.y2 - seg.y1;
-        var ang = Math.atan2(ady, adx);
-        drawArrowHead(ctx, seg.x2, seg.y2, ang, edgeMain);
-      }
-      var mx = (seg.x1 + seg.x2) / 2;
-      var my = (seg.y1 + seg.y2) / 2 - 10;
-      drawEdgeLabel(ctx, formatWeight(e.w), mx, my);
-    }
-
-    for (i = 0; i < layout.ids.length; i++) {
-      var id = layout.ids[i];
-      drawNode(ctx, id, pos[id], hi);
-    }
-  }
-
-  function setupCanvas(canvas, cssW, cssH) {
-    var dpr = Math.min(window.devicePixelRatio || 1, 2);
-    canvas.width = Math.floor(cssW * dpr);
-    canvas.height = Math.floor(cssH * dpr);
-    canvas.style.width = cssW + "px";
-    canvas.style.height = cssH + "px";
-    var ctx = canvas.getContext("2d");
-    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-    return ctx;
-  }
-
-  function parseData() {
-    var el = document.getElementById("graph-viz-json");
-    if (!el) return { directed: false, nodes: [], edges: [] };
-    try {
-      return JSON.parse(el.textContent);
-    } catch (e) {
-      return { directed: false, nodes: [], edges: [] };
-    }
-  }
-
-  function parseTraversal() {
-    var el = document.getElementById("graph-viz-traversal");
-    if (!el) return [];
-    try {
-      var t = JSON.parse(el.textContent);
-      return Array.isArray(t) ? t : [];
-    } catch (e) {
-      return [];
-    }
-  }
-
-  function parseTrace() {
-    var el = document.getElementById("graph-viz-trace");
-    if (!el) return [];
-    try {
-      var t = JSON.parse(el.textContent);
-      if (!Array.isArray(t)) return [];
-      return t.filter(function (x) {
-        return x && x.focus != null && Array.isArray(x.stack);
-      });
-    } catch (e) {
-      return [];
-    }
-  }
-
-  function stopAnimation() {
-    if (state.animTimer !== null) {
-      clearInterval(state.animTimer);
-      state.animTimer = null;
-    }
-    if (state.pulseRaf !== null) {
-      cancelAnimationFrame(state.pulseRaf);
-      state.pulseRaf = null;
-    }
-  }
-
-  function updateStepLabel(trace, traversal, step) {
-    var el = document.getElementById("graph-viz-step");
-    if (!el) return;
-    var len = trace.length > 0 ? trace.length : traversal.length;
-    if (!len) {
-      el.hidden = true;
-      el.textContent = "";
-      return;
-    }
-    el.hidden = false;
-    if (step < len) {
-      if (trace.length > 0) {
-        var fr = trace[step];
-        el.textContent =
-          "Recursive call stack: " +
-          fr.stack.join(" → ") +
-          ' — visiting / printing "' +
-          fr.focus +
-          '"';
-      } else {
-        var cur = traversal[step];
-        el.textContent =
-          "Step " +
-          (step + 1) +
-          " of " +
-          len +
-          ': visiting "' +
-          cur +
-          '" (output order)';
-      }
-    } else {
-      el.textContent = "Done — order: " + traversal.join(" → ");
-    }
-  }
-
-  function animStepCount() {
-    return state.trace.length > 0 ? state.trace.length : state.traversal.length;
-  }
-
-  function buildAnimHighlight(step) {
-    if (state.trace.length > 0) {
-      return buildHighlightFromTrace(state.trace, step);
-    }
-    return buildHighlightState(state.traversal, step);
-  }
-
-  function redrawFrame() {
-    if (!state.ctx || !state.layout) return;
-    var hi = buildAnimHighlight(state.animStep);
-    draw(state.ctx, state.layout, state.data, state.cssW, state.cssH, hi);
-    updateStepLabel(state.trace, state.traversal, state.animStep);
-  }
-
-  function startTraversalAnimation() {
-    stopAnimation();
-    var n = animStepCount();
-    if (!n) {
-      updateStepLabel([], [], 0);
-      redrawFrame();
-      return;
-    }
-    state.animStep = 0;
-    redrawFrame();
-    state.animTimer = window.setInterval(function () {
-      state.animStep += 1;
-      redrawFrame();
-      if (state.animStep >= n) {
-        stopAnimation();
-      }
-    }, STEP_MS);
-  }
-
-  function renderFull() {
-    var host = document.getElementById("graph-viz-host");
-    var canvas = document.getElementById("graph-viz-canvas");
-    var emptyEl = document.getElementById("graph-viz-empty");
-    if (!host || !canvas) return;
-
-    stopAnimation();
-
-    var data = parseData();
-    state.data = data;
-    state.traversal = parseTraversal();
-    state.trace = parseTrace();
-    var hasNodes = data.nodes && data.nodes.length > 0;
-
-    if (emptyEl) {
-      emptyEl.style.display = hasNodes ? "none" : "block";
-    }
-    canvas.style.display = hasNodes ? "block" : "none";
-
-    var stepEl = document.getElementById("graph-viz-step");
-    if (stepEl && !hasNodes) {
-      stepEl.hidden = true;
-      stepEl.textContent = "";
-    }
-
-    if (!hasNodes) {
-      state.layout = null;
-      return;
-    }
-
-    var cssW = Math.max(host.clientWidth || 400, 260);
-    var cssH = Math.round(Math.min(520, Math.max(MIN_H, cssW * 0.78)));
-    state.cssW = cssW;
-    state.cssH = cssH;
-    state.ctx = setupCanvas(canvas, cssW, cssH);
-    state.layout = runLayout(data, cssW, cssH, state.seed);
-
-    if (state.trace.length > 0 || state.traversal.length > 0) {
-      state.animStep = 0;
-      startTraversalAnimation();
-    } else {
-      var neutral = {
-        orderById: {},
-        current: null,
-        onStack: {},
-        useStack: false,
-      };
-      draw(state.ctx, state.layout, data, cssW, cssH, neutral);
-      if (stepEl) {
-        stepEl.hidden = true;
-        stepEl.textContent = "";
-      }
-    }
-  }
-
-  function reshuffle() {
-    state.seed = (Math.random() * 0xffffffff) >>> 0;
-    renderFull();
-  }
-
-  document.addEventListener("DOMContentLoaded", function () {
-    var raw = document.getElementById("graph-viz-json");
-    if (raw) {
-      state.seed = hashSeed(raw.textContent || "0");
-    }
-    renderFull();
-    var btn = document.getElementById("graph-viz-shuffle");
-    if (btn) btn.addEventListener("click", reshuffle);
-
-    var host = document.getElementById("graph-viz-host");
-    if (host && typeof ResizeObserver !== "undefined") {
-      var t = null;
-      var ro = new ResizeObserver(function () {
-        if (t) clearTimeout(t);
-        t = setTimeout(function () {
-          renderFull();
-        }, 80);
-      });
-      ro.observe(host);
-    } else {
-      window.addEventListener("resize", function () {
-        renderFull();
-      });
-    }
-
-    restoreScrollAfterFormPost();
+    ctx.fillText(id, p.x, p.y);
   });
-})();
+
+  ctx.restore();
+}
+
+function drawArrow(ctx, x1, y1, x2, y2) {
+  const angle  = Math.atan2(y2 - y1, x2 - x1);
+  const len    = Math.hypot(x2 - x1, y2 - y1);
+  const endX   = x1 + (len - NODE_R) * Math.cos(angle);
+  const endY   = y1 + (len - NODE_R) * Math.sin(angle);
+  const startX = x1 + NODE_R * Math.cos(angle);
+  const startY = y1 + NODE_R * Math.sin(angle);
+
+  ctx.moveTo(startX, startY);
+  ctx.lineTo(endX, endY);
+  ctx.stroke();
+
+  // Arrowhead
+  const hs = 10, hw = 5;
+  ctx.beginPath();
+  ctx.moveTo(endX, endY);
+  ctx.lineTo(
+    endX - hs * Math.cos(angle) + hw * Math.sin(angle),
+    endY - hs * Math.sin(angle) - hw * Math.cos(angle)
+  );
+  ctx.lineTo(
+    endX - hs * Math.cos(angle) - hw * Math.sin(angle),
+    endY - hs * Math.sin(angle) + hw * Math.cos(angle)
+  );
+  ctx.closePath();
+  ctx.fill();
+}
+
+// -------------------------------------------------------------------------
+// Interaction state machine
+// -------------------------------------------------------------------------
+
+const dragState = {
+  mode:     null,   // null | "node" | "edge" | "pan"
+  sourceId: null,   // node being dragged from
+  targetId: null,   // potential edge target
+  mx:       0,      // mouse x in canvas coords
+  my:       0,
+  panStartX: 0,
+  panStartY: 0,
+  panTX:    0,
+  panTY:    0,
+  moved:    false,
+};
+
+function hitTest(cx, cy) {
+  for (const id of [...graphData.nodes].reverse()) {
+    const p = positions[id];
+    if (!p) continue;
+    const dx = p.x - cx, dy = p.y - cy;
+    if (dx * dx + dy * dy <= NODE_R * NODE_R) return id;
+  }
+  return null;
+}
+
+function canvasXY(e) {
+  const rect = canvas.getBoundingClientRect();
+  const px = (e.clientX - rect.left);
+  const py = (e.clientY - rect.top);
+  return toCanvas(px, py);
+}
+
+canvas.addEventListener("mousedown", e => {
+  e.preventDefault();
+  const { x, y } = canvasXY(e);
+  const hit = hitTest(x, y);
+
+  if (e.button === 2) return; // handled by contextmenu
+
+  if (e.altKey && hit) {
+    // Alt+drag = move node
+    dragState.mode = "node";
+    dragState.sourceId = hit;
+    dragState.moved = false;
+  } else if (hit) {
+    // Normal drag on node = draw edge
+    dragState.mode = "edge";
+    dragState.sourceId = hit;
+    dragState.mx = x;
+    dragState.my = y;
+    dragState.moved = false;
+  } else {
+    // Drag on empty = pan
+    dragState.mode = "pan";
+    dragState.panStartX = e.clientX;
+    dragState.panStartY = e.clientY;
+    dragState.panTX = transform.x;
+    dragState.panTY = transform.y;
+    dragState.moved = false;
+  }
+});
+
+canvas.addEventListener("mousemove", e => {
+  const { x, y } = canvasXY(e);
+  dragState.mx = x;
+  dragState.my = y;
+
+  if (dragState.mode === "node") {
+    dragState.moved = true;
+    positions[dragState.sourceId] = { x, y };
+    savePositions();
+    render();
+  } else if (dragState.mode === "edge") {
+    dragState.moved = true;
+    dragState.targetId = hitTest(x, y);
+    render();
+  } else if (dragState.mode === "pan") {
+    dragState.moved = true;
+    transform.x = dragState.panTX + (e.clientX - dragState.panStartX);
+    transform.y = dragState.panTY + (e.clientY - dragState.panStartY);
+    render();
+  }
+});
+
+canvas.addEventListener("mouseup", e => {
+  const { x, y } = canvasXY(e);
+
+  if (dragState.mode === "edge" && dragState.sourceId) {
+    const target = hitTest(x, y);
+    if (target && target !== dragState.sourceId) {
+      // User dragged from source to target — fill in the edge form
+      prefillEdgeForm(dragState.sourceId, target);
+    } else if (!dragState.moved) {
+      // Click on a node — do nothing special (context menu handles actions)
+    }
+  } else if (dragState.mode === null && !dragState.moved) {
+    // Click on empty canvas — prompt to add node
+    const { x: cx, y: cy } = canvasXY(e);
+    const hit = hitTest(cx, cy);
+    if (!hit) showAddNodePrompt(cx, cy);
+  }
+
+  if (dragState.mode === "pan" && !dragState.moved) {
+    // Click on canvas (no node hit) handled above
+    const hit = hitTest(x, y);
+    if (!hit) showAddNodePrompt(x, y);
+  }
+
+  dragState.mode = null;
+  dragState.sourceId = null;
+  dragState.moved = false;
+  render();
+});
+
+canvas.addEventListener("wheel", e => {
+  e.preventDefault();
+  const rect = canvas.getBoundingClientRect();
+  const cx = e.clientX - rect.left;
+  const cy = e.clientY - rect.top;
+  const factor = e.deltaY < 0 ? 1.12 : 0.9;
+  applyZoom(factor, cx, cy);
+}, { passive: false });
+
+canvas.addEventListener("contextmenu", e => {
+  e.preventDefault();
+  const { x, y } = canvasXY(e);
+  const hit = hitTest(x, y);
+  if (hit) showContextMenu(e.clientX, e.clientY, hit);
+  else hideContextMenu();
+});
+
+document.addEventListener("click", hideContextMenu);
+document.addEventListener("keydown", e => {
+  if (e.key === "Escape") { hideContextMenu(); hidePrompt(); }
+});
+
+// -------------------------------------------------------------------------
+// Context menu
+// -------------------------------------------------------------------------
+
+const ctxMenu = document.getElementById("canvas-ctx-menu");
+let ctxNodeId = null;
+
+function showContextMenu(px, py, nodeId) {
+  ctxNodeId = nodeId;
+  ctxMenu.hidden = false;
+  ctxMenu.style.left = px + "px";
+  ctxMenu.style.top  = py + "px";
+}
+
+function hideContextMenu() {
+  ctxMenu.hidden = true;
+  ctxNodeId = null;
+}
+
+document.getElementById("ctx-set-start").addEventListener("click", () => {
+  if (!ctxNodeId) return;
+  // Prefill all start-node inputs
+  ["bfs-start","dfs-start","dijk-start","bf-start"].forEach(id => {
+    const el = document.getElementById(id);
+    if (el) el.value = ctxNodeId;
+  });
+  hideContextMenu();
+});
+
+document.getElementById("ctx-set-end").addEventListener("click", () => {
+  hideContextMenu(); // no end-node inputs in this UI yet; extensible
+});
+
+document.getElementById("ctx-delete-node").addEventListener("click", () => {
+  if (!ctxNodeId) return;
+  const form = document.createElement("form");
+  form.method = "POST";
+  form.action = "/delete_node";
+  const input = document.createElement("input");
+  input.name = "node_id";
+  input.value = ctxNodeId;
+  form.appendChild(input);
+  document.body.appendChild(form);
+  form.submit();
+});
+
+// -------------------------------------------------------------------------
+// Prompt overlay (add node on click)
+// -------------------------------------------------------------------------
+
+const overlay = document.getElementById("canvas-prompt-overlay");
+const promptInput = document.getElementById("canvas-prompt-input");
+let pendingCanvasXY = null;
+
+function showAddNodePrompt(cx, cy) {
+  pendingCanvasXY = { cx, cy };
+  document.getElementById("canvas-prompt-title").textContent = "Add node";
+  promptInput.value = "";
+  document.getElementById("canvas-prompt-extra").innerHTML = "";
+  overlay.hidden = false;
+  setTimeout(() => promptInput.focus(), 50);
+}
+
+function hidePrompt() {
+  overlay.hidden = true;
+  pendingCanvasXY = null;
+}
+
+document.getElementById("canvas-prompt-cancel").addEventListener("click", hidePrompt);
+document.getElementById("canvas-prompt-confirm").addEventListener("click", () => {
+  const id = promptInput.value.trim();
+  if (!id) return;
+  // Submit via the existing add-node form
+  const nodeInput = document.getElementById("add-node-id");
+  if (nodeInput) nodeInput.value = id;
+  document.getElementById("add-node-form").submit();
+});
+
+promptInput.addEventListener("keydown", e => {
+  if (e.key === "Enter") document.getElementById("canvas-prompt-confirm").click();
+});
+
+overlay.addEventListener("click", e => {
+  if (e.target === overlay) hidePrompt();
+});
+
+// -------------------------------------------------------------------------
+// Edge form prefill helper
+// -------------------------------------------------------------------------
+
+function prefillEdgeForm(from, to) {
+  const fromInput = document.getElementById("edge-from");
+  const toInput   = document.getElementById("edge-to");
+  if (fromInput) fromInput.value = from;
+  if (toInput)   toInput.value   = to;
+  // Highlight the weight input
+  const wInput = document.getElementById("edge-weight");
+  if (wInput) { wInput.focus(); }
+}
+
+// -------------------------------------------------------------------------
+// Toolbar buttons
+// -------------------------------------------------------------------------
+
+document.getElementById("graph-viz-shuffle").addEventListener("click", () => {
+  const n = graphData.nodes.length;
+  if (!n) return;
+  const cx = W * 0.5, cy = H * 0.5;
+  const r  = Math.min(W, H) * 0.33;
+  graphData.nodes.forEach((id, i) => {
+    const angle = (2 * Math.PI * i) / n - Math.PI / 2 + (Math.random() - 0.5) * 0.4;
+    positions[id] = {
+      x: cx + r * Math.cos(angle) * (0.8 + Math.random() * 0.4),
+      y: cy + r * Math.sin(angle) * (0.8 + Math.random() * 0.4),
+    };
+  });
+  savePositions();
+  render();
+});
+
+document.getElementById("graph-viz-zoom-in").addEventListener("click",  () => applyZoom(1.2, W / 2, H / 2));
+document.getElementById("graph-viz-zoom-out").addEventListener("click", () => applyZoom(0.83, W / 2, H / 2));
+document.getElementById("graph-viz-zoom-reset").addEventListener("click", () => {
+  transform = { x: 0, y: 0, scale: 1 };
+  render();
+});
+
+// -------------------------------------------------------------------------
+// Initial render
+// -------------------------------------------------------------------------
+
+render();

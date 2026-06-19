@@ -1,19 +1,41 @@
+"""Breadth-first search.
+
+Complexity: O(V + E) time, O(V) space.
+"""
+
+from __future__ import annotations
+
 from collections import deque
 
 
-def BFS(node_id, adjacency):
-    if node_id not in adjacency:
+def bfs(
+    start: str,
+    adjacency: dict[str, dict[str, float]],
+) -> list[str] | None:
+    """BFS from *start*, returning nodes in visit order.
+
+    Returns None if *start* is not in the graph.
+    Emits every visited node so the canvas can animate step-by-step.
+    """
+    if start not in adjacency:
         return None
-    source = node_id
-    visited = set()
-    visited.add(source)
-    q = deque([source])
-    print_list = []
-    while q:
-        node = q.popleft()
-        print_list.append(node)
-        for nei_node in adjacency[node]:
-            if nei_node not in visited:
-                visited.add(nei_node)
-                q.append(nei_node)
-    return print_list
+
+    visited: set[str] = {start}
+    queue: deque[str] = deque([start])
+    order: list[str] = []
+
+    while queue:
+        node = queue.popleft()
+        order.append(node)
+        for neighbour in adjacency[node]:
+            if neighbour not in visited:
+                visited.add(neighbour)
+                queue.append(neighbour)
+
+    return order
+
+
+# ---------------------------------------------------------------------------
+# Legacy alias — keeps old import in app.py working during transition
+# ---------------------------------------------------------------------------
+BFS = bfs
