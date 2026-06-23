@@ -18,7 +18,7 @@ from algorithms.cycle import has_cycle_directed, has_cycle_undirected
 from algorithms.dfs import DFS
 from algorithms.dijkstra import Dijkstra
 from algorithms.topological_sort import topological_sort
-from session_store import load_graph, save_graph
+from session_store import clear_graph, load_graph, save_graph
 
 # ---------------------------------------------------------------------------
 # App setup
@@ -34,6 +34,7 @@ app = Flask(__name__)
 app.secret_key = os.environ.get("SECRET_KEY", "dev-change-in-production")
 app.config["SESSION_COOKIE_SAMESITE"] = "Lax"
 app.config["SESSION_COOKIE_HTTPONLY"] = True
+app.config["SEND_FILE_MAX_AGE_DEFAULT"] = 0  # no browser cache for static files
 
 # Rate limiting — reasonable ceiling for an educational app.
 # Set env var RATELIMIT_ENABLED=0 to disable (e.g. in tests or local dev).
@@ -65,11 +66,21 @@ def fmt_dist(d: float) -> str:
         return str(int(fd))
     return str(d)
 
+app.jinja_env.filters["zip"] = zip
+
 
 @app.context_processor
 def inject_graph_viz() -> dict:
     g = load_graph()
-    return {"graph_viz": g.to_viz_dict()}
+    # Cache-busting version based on static file modification times
+    try:
+        v = max(
+            int(os.path.getmtime(os.path.join(app.static_folder, f)))
+            for f in ("style.css", "graph-viz.js")
+        )
+    except OSError:
+        v = 0
+    return {"graph_viz": g.to_viz_dict(), "_static_v": v}
 
 
 # ---------------------------------------------------------------------------
@@ -110,6 +121,11 @@ def _require_two_nodes(u_raw: str | None, v_raw: str | None) -> tuple[str | None
 
 @app.route("/", methods=["GET"])
 def home() -> str:
+    # When JS detects a new tab (no sessionStorage flag), it redirects
+    # here with ?_new=1 so we clear any stale session graph.
+    if request.args.get("_new") == "1":
+        clear_graph()
+        return redirect(url_for("home"))
     g = load_graph()
     return render_template("index.html", graph=g)
 
@@ -284,8 +300,6 @@ def scc_compute() -> str:
 
 @app.route("/reset", methods=["POST"])
 def reset() -> "Response":  # type: ignore[name-defined]
-    from session_store import clear_graph
-
     g = load_graph()
     directed = g.directed
     clear_graph()

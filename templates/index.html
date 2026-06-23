@@ -8,9 +8,20 @@
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,400;0,9..40,600;0,9..40,700;1,9..40,400&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
-    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}?v={{ _static_v }}">
 </head>
 <body>
+    <script>
+    // sessionStorage survives page refresh but clears on tab close.
+    // If the flag is absent we're in a brand-new tab → tell the server
+    // to wipe any stale session graph.
+    if (!sessionStorage.getItem('graphTabActive')) {
+        sessionStorage.setItem('graphTabActive', '1');
+        if (window.location.search.indexOf('_new') === -1) {
+            window.location.replace('/?_new=1');
+        }
+    }
+    </script>
     <div class="page">
         <header class="site-header">
             <h1>Graph Visualizer</h1>
@@ -286,22 +297,11 @@
                     </div>
                 </section>
 
-                <!-- ── API docs link ── -->
-                <section class="panel" style="padding:0.85rem 1.1rem;">
-                    <p style="margin:0;font-size:0.8125rem;color:var(--muted);">
-                        REST API available at
-                        <a href="/api/docs" target="_blank" id="api-docs-link"><code>/api/docs</code></a>
-                        — Swagger UI with all endpoints documented.
-                    </p>
-                </section>
+
             </aside>
         </div>
 
-        <footer class="page-footer">
-            <span>Flask · Vanilla JS · Graph algorithms from scratch</span>
-            <a href="/api/docs" id="footer-api-link">API Docs</a>
-            <a href="https://github.com" id="footer-github-link">GitHub</a>
-        </footer>
+        <footer class="page-footer"></footer>
     </div>
 
     <!-- Context menu (right-click on node) -->
@@ -325,6 +325,6 @@
         </div>
     </div>
 
-    <script src="{{ url_for('static', filename='graph-viz.js') }}"></script>
+    <script src="{{ url_for('static', filename='graph-viz.js') }}?v={{ _static_v }}"></script>
 </body>
 </html>

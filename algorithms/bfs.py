@@ -27,7 +27,7 @@ def bfs(
     while queue:
         node = queue.popleft()
         order.append(node)
-        for neighbour in adjacency[node]:
+        for neighbour in sorted(adjacency[node].keys(), key=str):
             if neighbour not in visited:
                 visited.add(neighbour)
                 queue.append(neighbour)

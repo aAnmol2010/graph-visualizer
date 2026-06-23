@@ -122,9 +122,9 @@ function loadPositions() {
     const raw = sessionStorage.getItem("graph-viz-positions");
     if (raw) {
       positions = JSON.parse(raw);
-      // Auto-repair any nodes that got stuck at (0, 0) during the previous W=0 bug
+      // Clean up any nodes that got invalid coordinates (e.g. from early W=0 renders)
       for (const id in positions) {
-        if (positions[id].x === 0 && positions[id].y === 0) {
+        if (!positions[id] || positions[id].x < 10 || positions[id].y < 10 || isNaN(positions[id].x)) {
           delete positions[id];
         }
       }
@@ -139,6 +139,9 @@ function savePositions() {
 }
 
 function ensurePositions() {
+  // Prevent assigning positions if the canvas dimensions aren't ready
+  if (W < 10 || H < 10) return;
+
   const nodes = graphData.nodes;
   if (!nodes.length) return;
 
@@ -239,6 +242,12 @@ function initPlayback(steps) {
   pbBar.hidden = false;
   updatePbLabel();
   render();
+  // Auto-play after a brief delay so the user sees the graph first
+  setTimeout(() => {
+    if (!playback.playing && playback.current < playback.steps.length) {
+      document.getElementById("pb-play").click();
+    }
+  }, 600);
 }
 
 function updatePbLabel() {
@@ -311,7 +320,6 @@ document.getElementById("pb-speed").addEventListener("input", function () {
 });
 
 // Start playback if traversal data was returned from server
-if (traversal.length) { initPlayback(traversal); }
 
 // -------------------------------------------------------------------------
 // SCC colour map
@@ -755,4 +763,11 @@ document.getElementById("graph-viz-zoom-reset").addEventListener("click", () => 
 // Initial render
 // -------------------------------------------------------------------------
 
-render();
+// Ensure canvas is properly sized before the first draw — ResizeObserver
+// is async, so calling resize() synchronously avoids a blank first frame.
+resize();
+
+// Auto-start playback if data was injected by a server algorithm response.
+// This must happen AFTER all other code is initialized to avoid ReferenceErrors.
+if (traversal.length) { initPlayback(traversal); }
+else if (trace.length) { initPlayback(trace); }
