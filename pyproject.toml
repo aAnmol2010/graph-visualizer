@@ -22,6 +22,10 @@ dev = [
     "types-flask",
 ]
 
+[tool.setuptools]
+packages = ["algorithms", "api"]
+py-modules = ["app", "graph", "session_store"]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = "."
