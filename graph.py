@@ -102,7 +102,7 @@ class Graph:
         return json.dumps(self.to_dict())
 
     @classmethod
-    def from_dict(cls, data: dict[str, Any]) -> "Graph":
+    def from_dict(cls, data: dict[str, Any]) -> Graph:
         """Reconstruct a Graph from the dict produced by :meth:`to_dict`."""
         g = cls(directed=bool(data.get("directed", False)))
         for node_id in data.get("nodes", []):
@@ -116,7 +116,7 @@ class Graph:
         return g
 
     @classmethod
-    def from_json(cls, raw: str) -> "Graph":
+    def from_json(cls, raw: str) -> Graph:
         return cls.from_dict(json.loads(raw))
 
     # ------------------------------------------------------------------

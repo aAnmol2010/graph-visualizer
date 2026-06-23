@@ -36,7 +36,7 @@ def tarjan_scc(
 
     # Iterative Tarjan using an explicit call-stack simulation.
     # Each frame: (node, iterator-over-neighbours, entry-index)
-    call_stack: list[tuple[str, "iter[str]"]] = []
+    call_stack: list[tuple[str, iter[str]]] = []
 
     def _start(v: str) -> None:
         idx = index_counter[0]

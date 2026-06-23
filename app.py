@@ -9,7 +9,7 @@ from __future__ import annotations
 import logging
 import os
 
-from flask import Flask, flash, redirect, render_template, request, url_for
+from flask import Flask, Response, flash, redirect, render_template, request, url_for
 from flask_limiter import Limiter
 from flask_limiter.util import get_remote_address
 
@@ -132,7 +132,7 @@ def home() -> str:
 
 @app.route("/add_node", methods=["POST"])
 @limiter.limit("60 per minute")
-def add_n() -> "Response":  # type: ignore[name-defined]
+def add_n() -> Response:  # type: ignore[name-defined]
     g = load_graph()
     node_id = _clean(request.form.get("node_id"))
     if not node_id:
@@ -150,7 +150,7 @@ def add_n() -> "Response":  # type: ignore[name-defined]
 
 @app.route("/add_edge", methods=["POST"])
 @limiter.limit("60 per minute")
-def add_e() -> "Response":  # type: ignore[name-defined]
+def add_e() -> Response:  # type: ignore[name-defined]
     g = load_graph()
     u_raw = request.form.get("u")
     v_raw = request.form.get("v")
@@ -177,7 +177,7 @@ def add_e() -> "Response":  # type: ignore[name-defined]
 
 @app.route("/delete_node", methods=["POST"])
 @limiter.limit("60 per minute")
-def del_n() -> "Response":  # type: ignore[name-defined]
+def del_n() -> Response:  # type: ignore[name-defined]
     g = load_graph()
     node_id = _clean(request.form.get("node_id"))
     if not node_id or node_id not in g.node:
@@ -192,7 +192,7 @@ def del_n() -> "Response":  # type: ignore[name-defined]
 
 @app.route("/delete_edge", methods=["POST"])
 @limiter.limit("60 per minute")
-def del_e() -> "Response":  # type: ignore[name-defined]
+def del_e() -> Response:  # type: ignore[name-defined]
     g = load_graph()
     u = _clean(request.form.get("u"))
     v = _clean(request.form.get("v"))
@@ -299,7 +299,7 @@ def scc_compute() -> str:
 
 
 @app.route("/reset", methods=["POST"])
-def reset() -> "Response":  # type: ignore[name-defined]
+def reset() -> Response:  # type: ignore[name-defined]
     g = load_graph()
     directed = g.directed
     clear_graph()
@@ -311,7 +311,7 @@ def reset() -> "Response":  # type: ignore[name-defined]
 
 
 @app.route("/set_mode", methods=["POST"])
-def set_mode() -> "Response":  # type: ignore[name-defined]
+def set_mode() -> Response:  # type: ignore[name-defined]
     from graph import Graph as G
     from session_store import clear_graph
 

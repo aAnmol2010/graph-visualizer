@@ -2,10 +2,6 @@
 
 from __future__ import annotations
 
-import json
-
-import pytest
-
 from graph import Graph
 
 
@@ -137,7 +133,6 @@ class TestSerialization:
 
     def test_to_json_round_trip(self, triangle):
         json_str = triangle.to_json()
-        data = json.loads(json_str)
         g2 = Graph.from_json(json_str)
         assert not g2.directed
         assert g2.edge_count == 3
